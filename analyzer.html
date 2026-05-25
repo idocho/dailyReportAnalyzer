@@ -668,30 +668,36 @@ function aggregateStudentData(name, sh, cls, tb, gradeSem){
 
   // Radar computation
   const safe=N||1;
-  // 태도: great/good 비율 기반, caution 패널티 최대 -30
-  const cautTotal=caut.sleepy+caut.chat+caut.attitude+caut.late;
-  const attitude=Math.max(0,Math.min(100,Math.round((cond.great+cond.good)/safe*100 - cautTotal/safe*30)));
-  // 참여도: 발표/질문 주축(×150), 도움/예습/오류정정 보조(×20)
-  const engage=Math.min(100,Math.round(
-    (eng.present+eng.question)/safe*150
-    +(eng.help+eng.preview+eng.error_fix)/safe*20
-  ));
+  // ① 학습태도: 컨디션 가중평균 − 차등 caution 패널티
+  const condScore={great:95,good:80,normal:65,low:45,bad:25};
+  const condRecorded=Object.values(cond).reduce((a,b)=>a+b,0)||safe;
+  const condAvg=['great','good','normal','low','bad'].reduce((s,k)=>s+condScore[k]*(cond[k]||0),0)/condRecorded;
+  const cautPenalty=(caut.late*8+caut.sleepy*5+caut.chat*6+caut.attitude*10)/safe;
+  const attitude=Math.max(20,Math.min(100,Math.round(condAvg-cautPenalty)));
+  // ② 수업참여: 발표/질문/도움 (예습·오류정정 → 자기주도성 분리)
+  const engRate=(eng.present*14+eng.question*10+eng.help*6)/safe;
+  const engage=35+Math.min(50,Math.round(engRate*8));
+  // ③ 자기주도성: 과제 기반(최대70) + 예습·자율학습·오류정정·재풀이 보조(최대30)
   const hwGrade={done:100,most:80,half:50,little:25,none:0};
   const hwScores=sessions.map(([,d])=>hwGrade[d.assign_grade]).filter(v=>v!==undefined);
-  const homework=hwScores.length?Math.min(100,Math.round(hwScores.reduce((a,b)=>a+b,0)/hwScores.length)):0;
-  // 이해도: + highlight(mastered/effort) 보너스 최대 +10
-  const understand=Math.min(100,Math.round(
-    (und.top+und.good)/safe*70 + undSub.self_solve/safe*20 + undSub.retry/safe*10
-    + (hl.mastered+hl.effort)/safe*10
-  ));
+  const hwAvg=hwScores.length?hwScores.reduce((a,b)=>a+b,0)/hwScores.length:50;
+  const hwBase=Math.round(hwAvg*0.7);
+  const autoBehavior=Math.min(30,Math.round(eng.preview/safe*18+extra.self_study/safe*15+eng.error_fix/safe*12+undSub.retry/safe*10));
+  const autonomy=Math.min(100,hwBase+autoBehavior);
+  // ④ 이해응용: 이해도 가중평균 + 보조 행동 보너스(최대+15)
+  const undScore={top:95,good:80,normal_u:65,confused:45,hard:28};
+  const undRecorded=['top','good','normal_u','confused','hard'].reduce((s,k)=>s+(und[k]||0),0);
+  const undAvg=undRecorded>0?['top','good','normal_u','confused','hard'].reduce((s,k)=>s+undScore[k]*(und[k]||0),0)/undRecorded:65;
+  const undBonus=Math.min(15,Math.round(undSub.self_solve/safe*10+undSub.retry/safe*7+hl.mastered/safe*8));
+  const understand=Math.min(100,Math.round(undAvg+undBonus));
   const scoresList=aggregateStudentScores(name,sh,cls);
-  // 성취도: + highlight(perfect/improved) 보너스 최대 +10 (시험 있을 때만)
-  const achievement=scoresList.length>0
-    ?Math.min(100,Math.round(
-        scoresList.slice(-3).reduce((a,s)=>a+s.percentile,0)/Math.min(3,scoresList.length)
-        + (hl.perfect+hl.improved)/safe*10
-      ))
-    :0;
+  // ⑤ 성취성장: 백분위60% + 원점수비율40% + 하이라이트 보너스(최대+10)
+  const recentN=Math.min(3,scoresList.length);
+  const recent=scoresList.slice(-recentN);
+  const percentileAvg=recentN>0?recent.reduce((a,s)=>a+s.percentile,0)/recentN:0;
+  const rawPctAvg=recentN>0?recent.reduce((a,s)=>a+s.myPct,0)/recentN:0;
+  const hlBonus=Math.min(10,Math.round((hl.perfect+hl.improved)/safe*15));
+  const achievement=scoresList.length>0?Math.min(100,Math.round(0.6*percentileAvg+0.4*rawPctAvg+hlBonus)):0;
 
   // Current memo
   const note=allInput[nkey]?.note||allInput[nkey]?.memo||'';
@@ -717,7 +723,16 @@ function aggregateStudentData(name, sh, cls, tb, gradeSem){
     extraCounts:extra,
     highlightCounts:hl,
     calendarData:calData,
-    radarAxes:{attitude,engage,homework,understand,achievement},
+    radarAxes:{attitude,engage,autonomy,understand,achievement},
+    hwAvg:Math.round(hwAvg),
+    hwCounts:{
+      done:sessions.filter(([,d])=>d.assign_grade==='done').length,
+      most:sessions.filter(([,d])=>d.assign_grade==='most').length,
+      half:sessions.filter(([,d])=>d.assign_grade==='half').length,
+      little:sessions.filter(([,d])=>d.assign_grade==='little').length,
+      none:sessions.filter(([,d])=>d.assign_grade==='none').length,
+      recorded:hwScores.length,
+    },
     note, assign,
     highlightDates,
     scoresList,
@@ -833,20 +848,21 @@ JSON 형식 엄수. 모든 문자열 값은 한국어. 배열·숫자 올바른 
 [수업 컨디션 ${N}회 중]
 번뜩임(최상): ${c.great}회 / 잘함: ${c.good}회 / 보통: ${c.normal}회 / 낮음: ${c.low}회 / 힘듦: ${c.bad}회
 
-[참여도]
-발표: ${e.present}회 / 질문: ${e.question}회 / 도움: ${e.help}회 / 예습: ${e.preview}회 / 오류정정: ${e.error_fix}회
+[수업참여]
+발표: ${e.present}회 / 질문: ${e.question}회 / 도움: ${e.help}회
 
-[이해도]
+[자기주도성]
+예습: ${e.preview}회 / 오류정정: ${e.error_fix}회 / 자율학습: ${ex.self_study}회 / 오답재풀이: ${us.retry}회
+과제(${d.hwCounts.recorded}회 기록): 완료 ${d.hwCounts.done}회 / 대부분 ${d.hwCounts.most}회 / 절반 ${d.hwCounts.half}회 / 일부 ${d.hwCounts.little}회 / 미완 ${d.hwCounts.none}회${d.hwCounts.recorded?` · 평균 ${d.hwAvg}점`:''}
+
+[이해응용]
 완벽: ${u.top}회 / 잘함: ${u.good}회 / 이해함: ${u.normal_u}회 / 헷갈림: ${u.confused}회 / 어려워함: ${u.hard}회
-혼자해결: ${us.self_solve}회 / 오답재풀이: ${us.retry}회 / 개념혼동: ${us.confused}회
-
-[과제 수행도 (${hwScores.length}회 기록 중)]
-${hwScores.length?`평균 ${homework}점/100점 (완료:${sessions.filter(([,d])=>d.assign_grade==='done').length}회 / 대부분:${sessions.filter(([,d])=>d.assign_grade==='most').length}회 / 절반:${sessions.filter(([,d])=>d.assign_grade==='half').length}회 / 일부:${sessions.filter(([,d])=>d.assign_grade==='little').length}회 / 미완:${sessions.filter(([,d])=>d.assign_grade==='none').length}회)`:'기록 없음'}
+혼자해결: ${us.self_solve}회 / 개념혼동: ${us.confused}회 / 개념완전습득: ${hl.mastered}회
 
 [특이 사항]
-하이라이트: 만점·완벽 ${hl.perfect}회 / 큰향상 ${hl.improved}회 / 개념완전습득 ${hl.mastered}회 / 끝까지도전 ${hl.effort}회
+하이라이트: 만점·완벽 ${hl.perfect}회 / 큰향상 ${hl.improved}회 / 끝까지도전 ${hl.effort}회
 주의 패턴: ${cautionInfo.length?cautionInfo.join(' / '):'없음'}
-기타: 자율학습 ${ex.self_study}회 / 주간Test ${ex.weekly_test}회 / 재시험 ${ex.retest}회
+기타: 주간Test ${ex.weekly_test}회 / 재시험 ${ex.retest}회
 
 [성적 (이 기간)]
 ${scoresInfo}
@@ -894,7 +910,8 @@ async function callClaude(r){
     },
     body:JSON.stringify({
       model:CLAUDE_MODEL,
-      max_tokens:1024,
+      max_tokens:1500,
+      temperature:0.7,
       system,
       messages:[{role:'user',content:user}],
     }),
@@ -936,8 +953,8 @@ function radarSVG(axes, size=200){
   const cx=size/2, cy=size/2;
   const r=size*0.38;
   const N=5;
-  const labels=['수업 태도','참여도','이해도','성취도','과제 성실도'];
-  const keys=['attitude','engage','understand','achievement','homework'];
+  const labels=['학습태도','수업참여','자기주도성','이해응용','성취성장'];
+  const keys=['attitude','engage','autonomy','understand','achievement'];
   const pt=(i,f)=>{
     const a=(i*2*Math.PI/N)-Math.PI/2;
     return[cx+r*f*Math.cos(a), cy+r*f*Math.sin(a)];
@@ -1452,8 +1469,8 @@ function buildReportRadarSVG(axes,size){
   const pad=28;
   const cx=size/2, cy=size/2, r=size*0.36;
   const N=5;
-  const labels=['수업 태도','참여도','이해도','성취도','과제 성실도'];
-  const keys=['attitude','engage','understand','achievement','homework'];
+  const labels=['학습태도','수업참여','자기주도성','이해응용','성취성장'];
+  const keys=['attitude','engage','autonomy','understand','achievement'];
   const pt=(i,f)=>{const a=(i*2*Math.PI/N)-Math.PI/2;return[cx+r*f*Math.cos(a),cy+r*f*Math.sin(a)];};
   const grids=[.25,.5,.75,1].map(f=>{const pts=Array.from({length:N},(_,i)=>pt(i,f));return`<polygon points="${pts.map(p=>p.join(',')).join(' ')}" fill="none" stroke="#E2E8F0" stroke-width="1"/>`;}).join('');
   const axesL=Array.from({length:N},(_,i)=>{const[x2,y2]=pt(i,1);return`<line x1="${cx}" y1="${cy}" x2="${x2}" y2="${y2}" stroke="#E2E8F0" stroke-width="1"/>`;}).join('');
