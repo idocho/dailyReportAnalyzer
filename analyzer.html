@@ -511,7 +511,7 @@ function updateGenBtn(){
 async function startGeneration(){
   if(generating)return;
   if(!fbUrl||!fbPath){toast('Firebase 설정이 필요합니다.');return;}
-  if(!claudeKey){toast('Claude API Key를 설정에서 입력하세요.');return;}
+  if(!claudeKey&&!testMode){toast('Claude API Key를 설정에서 입력하세요.');return;}
   if(selectedCls.size===0){toast('반을 선택하세요.');return;}
   if(!dateRange.start){toast('기간을 선택하세요.');return;}
 
