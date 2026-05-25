@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  DailyReportAnalyzer v1.0.0
+  DailyReportAnalyzer v0.1.0
   Crafted by IDO(idocho@kakao.com) · Powered by Claude AI
   월간 학부모 리포트 생성기 — Firebase 읽기 전용
 -->
@@ -8,7 +8,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DailyReportAnalyzer v1.0.0</title>
+<title>DailyReportAnalyzer v0.1.0</title>
 <style>
 :root{
   --bg:#0F1117;--card:#1A1D2E;--card2:#222639;--border:#2E3347;
@@ -204,6 +204,12 @@ hr{border:none;border-top:1px solid var(--border);margin:10px 0;}
         <button class="period-btn active" id="pb-this" onclick="selectPeriod('this')">이번 달</button>
         <button class="period-btn" id="pb-last" onclick="selectPeriod('last')">지난 달</button>
         <button class="period-btn" id="pb-q3" onclick="selectPeriod('q3')">최근 3개월</button>
+        <button class="period-btn" id="pb-custom" onclick="selectPeriod('custom')">직접 입력</button>
+      </div>
+      <div id="customRange" style="display:none;margin-top:8px;display:none;gap:6px;align-items:center;flex-wrap:wrap">
+        <input type="date" id="cr-start" style="font-size:12px;padding:4px 8px;background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:6px" onchange="applyCustomRange()">
+        <span style="color:var(--muted);font-size:12px">~</span>
+        <input type="date" id="cr-end" style="font-size:12px;padding:4px 8px;background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:6px" onchange="applyCustomRange()">
       </div>
       <div id="periodLabel" class="period-label" style="margin-top:8px;"></div>
     </div>
@@ -412,9 +418,26 @@ function toggleClass(sh,cls){
   updateGenBtn();
 }
 
+function applyCustomRange(){
+  const s=document.getElementById('cr-start')?.value;
+  const e=document.getElementById('cr-end')?.value;
+  if(!s||!e||s>e)return;
+  // 포함 월 목록 계산
+  const months=[];
+  const [sy,sm]=s.split('-').map(Number);
+  const [ey,em]=e.split('-').map(Number);
+  let yi=sy,mi=sm;
+  while(yi<ey||(yi===ey&&mi<=em)){months.push({y:yi,m:mi});mi++;if(mi>12){mi=1;yi++;}}
+  dateRange={start:s,end:e,label:`${s} ~ ${e}`,year:ey,month:em,months};
+  document.getElementById('periodLabel').textContent=dateRange.label;
+  updateGenBtn();
+}
+
 function selectPeriod(type){
   document.querySelectorAll('.period-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById(`pb-${type}`).classList.add('active');
+  const cr=document.getElementById('customRange');
+  if(cr)cr.style.display=type==='custom'?'flex':'none';
   const now=new Date();
   const y=now.getFullYear(), m=now.getMonth()+1;
   if(type==='this'){
@@ -432,7 +455,7 @@ function selectPeriod(type){
       label:fmtMonth(ly,lm),
       year:ly, month:lm, months:[{y:ly,m:lm}]
     };
-  } else {
+  } else if(type==='q3'){
     const months=[];
     for(let i=2;i>=0;i--){
       let mi=m-i; let yi=y;
@@ -446,8 +469,11 @@ function selectPeriod(type){
       year:y, month:m, months
     };
   }
-  document.getElementById('periodLabel').textContent=dateRange.label;
-  updateGenBtn();
+  // custom: applyCustomRange()가 dateRange 직접 설정
+  if(type!=='custom'){
+    document.getElementById('periodLabel').textContent=dateRange.label;
+    updateGenBtn();
+  }
 }
 
 function countSelectedStudents(){
@@ -488,14 +514,15 @@ async function startGeneration(){
   try{
     // Load Firebase data
     setProgress(0,'Firebase 데이터 로드 중...');
-    const [obs, input, cfg]=await Promise.all([
+    const [obs, input, cfg, scores]=await Promise.all([
       fbGet('obs').catch(()=>({})),
       fbGet('input').catch(()=>({})),
       cfgData?Promise.resolve(cfgData):fbGet('config').catch(()=>({})),
+      fbGet('scores').catch(()=>({})),
     ]);
     allObs=obs||{};
     allInput=input||{};
-    allScores={};
+    allScores=scores||{};
     if(!cfgData)cfgData=cfg;
 
     // Build student list
@@ -569,12 +596,13 @@ function setProgress(pct,msg){
 //  DATA AGGREGATION
 // ══════════════════════════════════════════════════
 function aggregateStudentData(name, sh, cls, tb, gradeSem){
-  const okey=`${sh}|${cls}|${name}`;
+  const okey=`${sh}|${cls}|${name}|${tb}`;  // 4-part (현재 DRW 형식)
+  const okey3=`${sh}|${cls}|${name}`;       // 3-part (구형 호환)
   const ikey=`${sh}|${cls}|${name}|${tb}`;
   const nkey=`${sh}|${cls}|${name}|__note__`;
 
   // Get obs data for this student
-  const obs=allObs[okey]||{};
+  const obs=allObs[okey]||allObs[okey3]||{};
   // Filter by date range
   const sessions=Object.entries(obs)
     .filter(([d])=>d>=dateRange.start&&d<=dateRange.end)
@@ -583,8 +611,8 @@ function aggregateStudentData(name, sh, cls, tb, gradeSem){
   const N=sessions.length;
 
   // Aggregate counts
-  const cond={great:0,good:0,normal:0,bad:0};
-  const und={fast:0,normal_u:0,slow:0};
+  const cond={great:0,good:0,normal:0,low:0,bad:0};
+  const und={top:0,good:0,normal_u:0,confused:0,hard:0};
   const undSub={self_solve:0,retry:0,confused:0};
   const eng={present:0,question:0,help:0,preview:0,error_fix:0};
   const caut={sleepy:0,chat:0,attitude:0,late:0};
@@ -606,11 +634,30 @@ function aggregateStudentData(name, sh, cls, tb, gradeSem){
 
   // Radar computation
   const safe=N||1;
-  const attitude=Math.min(100,Math.round(((cond.great+cond.good)/safe)*100));
-  const engage=Math.min(100,Math.round(((eng.present+eng.question)/safe)*60)); // 60% weight, capped
-  const homework=0; // No historical input data — show N/A
-  const understand=Math.min(100,Math.round((und.fast/safe*70)+(undSub.self_solve/safe*20)+(undSub.retry/safe*10)));
-  const achievement=0; // No scores data yet
+  // 태도: great/good 비율 기반, caution 패널티 최대 -30
+  const cautTotal=caut.sleepy+caut.chat+caut.attitude+caut.late;
+  const attitude=Math.max(0,Math.min(100,Math.round((cond.great+cond.good)/safe*100 - cautTotal/safe*30)));
+  // 참여도: 발표/질문 주축(×150), 도움/예습/오류정정 보조(×20)
+  const engage=Math.min(100,Math.round(
+    (eng.present+eng.question)/safe*150
+    +(eng.help+eng.preview+eng.error_fix)/safe*20
+  ));
+  const hwGrade={done:100,most:80,half:50,little:25,none:0};
+  const hwScores=sessions.map(([,d])=>hwGrade[d.assign_grade]).filter(v=>v!==undefined);
+  const homework=hwScores.length?Math.min(100,Math.round(hwScores.reduce((a,b)=>a+b,0)/hwScores.length)):0;
+  // 이해도: + highlight(mastered/effort) 보너스 최대 +10
+  const understand=Math.min(100,Math.round(
+    (und.top+und.good)/safe*70 + undSub.self_solve/safe*20 + undSub.retry/safe*10
+    + (hl.mastered+hl.effort)/safe*10
+  ));
+  const scoresList=aggregateStudentScores(name,sh,cls);
+  // 성취도: + highlight(perfect/improved) 보너스 최대 +10 (시험 있을 때만)
+  const achievement=scoresList.length>0
+    ?Math.min(100,Math.round(
+        scoresList.slice(-3).reduce((a,s)=>a+s.percentile,0)/Math.min(3,scoresList.length)
+        + (hl.perfect+hl.improved)/safe*10
+      ))
+    :0;
 
   // Current memo
   const note=allInput[nkey]?.note||allInput[nkey]?.memo||'';
@@ -639,7 +686,35 @@ function aggregateStudentData(name, sh, cls, tb, gradeSem){
     radarAxes:{attitude,engage,homework,understand,achievement},
     note, assign,
     highlightDates,
+    scoresList,
   };
+}
+
+// ══════════════════════════════════════════════════
+//  SCORES AGGREGATION
+// ══════════════════════════════════════════════════
+function aggregateStudentScores(name,sh,cls){
+  const clsKey=`${sh}|${cls}`;
+  const tests=allScores[clsKey]||{};
+  const result=[];
+  for(const[testKey,t] of Object.entries(tests)){
+    if(!t||!t.date)continue;
+    if(t.date<dateRange.start||t.date>dateRange.end)continue;
+    const allVals=Object.values(t.students||{}).filter(v=>v!==''&&v!==null&&!isNaN(v)).map(Number);
+    const myRaw=(t.students||{})[name];
+    if(myRaw===undefined||myRaw===null||myRaw==='')continue;
+    const myScore=Number(myRaw);
+    const maxScore=t.max_score||100;
+    const myPct=Math.round((myScore/maxScore)*100);
+    const classAvg=allVals.length>0?allVals.reduce((a,b)=>a+b,0)/allVals.length:null;
+    const avgPct=classAvg!==null?Math.round((classAvg/maxScore)*100):null;
+    const rank=allVals.filter(s=>s>myScore).length+1;
+    const classSize=allVals.length;
+    const percentile=classSize>1?Math.round(((classSize-rank)/(classSize-1))*100):100;
+    result.push({testKey,type:t.type||'',round:t.round||'',date:t.date,
+      score:myScore,maxScore,myPct,avgPct,classSize,rank,percentile});
+  }
+  return result.sort((a,b)=>a.date.localeCompare(b.date));
 }
 
 // ══════════════════════════════════════════════════
@@ -665,6 +740,9 @@ JSON만 출력하세요. 설명 없이 JSON 객체만.`;
   const cautionInfo=[];
   if(ca.late>0)cautionInfo.push(`지각 ${ca.late}회 (직접 언급 가능: "시간 엄수 습관")`);
   if(ca.sleepy>0||ca.chat>0||ca.attitude>0)cautionInfo.push(`집중도 저하 징후 ${ca.sleepy+ca.chat+ca.attitude}회 (완곡 표현만)`);
+  const scoresInfo=d.scoresList.length
+    ?d.scoresList.map(s=>`${s.type}${s.round?` ${s.round}회`:''}(${s.date}): ${s.score}/${s.maxScore}점(${s.myPct}%)${s.avgPct!==null?` 학급평균${s.avgPct}% ${s.rank}등/${s.classSize}명`:''}`).join(' / ')
+    :'없음';
 
   const user=`[학생 정보]
 이름: ${d.name}
@@ -673,19 +751,25 @@ JSON만 출력하세요. 설명 없이 JSON 객체만.`;
 총 수업 횟수: ${N}회
 
 [수업 컨디션 ${N}회 중]
-번뜩임(최상): ${c.great}회 / 잘함: ${c.good}회 / 보통: ${c.normal}회 / 힘듦: ${c.bad}회
+번뜩임(최상): ${c.great}회 / 잘함: ${c.good}회 / 보통: ${c.normal}회 / 낮음: ${c.low}회 / 힘듦: ${c.bad}회
 
 [참여도]
 발표: ${e.present}회 / 질문: ${e.question}회 / 도움: ${e.help}회 / 예습: ${e.preview}회 / 오류정정: ${e.error_fix}회
 
 [이해도]
-빠름: ${u.fast}회 / 보통: ${u.normal_u}회 / 느림: ${u.slow}회
+완벽: ${u.top}회 / 잘함: ${u.good}회 / 이해함: ${u.normal_u}회 / 헷갈림: ${u.confused}회 / 어려워함: ${u.hard}회
 혼자해결: ${us.self_solve}회 / 오답재풀이: ${us.retry}회 / 개념혼동: ${us.confused}회
+
+[과제 수행도 (${hwScores.length}회 기록 중)]
+${hwScores.length?`평균 ${homework}점/100점 (완료:${sessions.filter(([,d])=>d.assign_grade==='done').length}회 / 대부분:${sessions.filter(([,d])=>d.assign_grade==='most').length}회 / 절반:${sessions.filter(([,d])=>d.assign_grade==='half').length}회 / 일부:${sessions.filter(([,d])=>d.assign_grade==='little').length}회 / 미완:${sessions.filter(([,d])=>d.assign_grade==='none').length}회)`:'기록 없음'}
 
 [특이 사항]
 하이라이트: 만점·완벽 ${hl.perfect}회 / 큰향상 ${hl.improved}회 / 개념완전습득 ${hl.mastered}회 / 끝까지도전 ${hl.effort}회
 주의 패턴: ${cautionInfo.length?cautionInfo.join(' / '):'없음'}
 기타: 자율학습 ${ex.self_study}회 / 주간Test ${ex.weekly_test}회 / 재시험 ${ex.retest}회
+
+[성적 (이 기간)]
+${scoresInfo}
 
 ${d.note?`[기존 특이사항 메모 — 반드시 반영]\n${d.note}\n\n`:''}${d.highlightDates.length?`[하이라이트 날짜]\n${d.highlightDates.slice(0,5).map(h=>`${fmtDate(h.date)}`).join(', ')}\n\n`:''}출력 JSON:
 {
@@ -750,11 +834,12 @@ function defaultAI(r){
 //  CHARTS
 // ══════════════════════════════════════════════════
 function radarSVG(axes, size=200){
+  const pad=28;
   const cx=size/2, cy=size/2;
   const r=size*0.38;
   const N=5;
-  const labels=['수업 태도','참여도','과제 성실도','이해도','성취도'];
-  const keys=['attitude','engage','homework','understand','achievement'];
+  const labels=['수업 태도','참여도','이해도','성취도','과제 성실도'];
+  const keys=['attitude','engage','understand','achievement','homework'];
   const pt=(i,f)=>{
     const a=(i*2*Math.PI/N)-Math.PI/2;
     return[cx+r*f*Math.cos(a), cy+r*f*Math.sin(a)];
@@ -785,7 +870,7 @@ function radarSVG(axes, size=200){
 <text x="${lx}" y="${ly+12}" text-anchor="${anchor}" font-size="8.5" fill="${hasData?'#3B82F6':'#444'}">${hasData?val:'N/A'}</text>`;
   }).join('');
 
-  return`<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+  return`<svg width="${size+2*pad}" height="${size+2*pad}" viewBox="${-pad} ${-pad} ${size+2*pad} ${size+2*pad}" xmlns="http://www.w3.org/2000/svg">
 ${grids}${axisLines}
 <polygon points="${poly}" fill="#3B82F633" stroke="#3B82F6" stroke-width="1.5" stroke-linejoin="round"/>
 ${dataPts.map(([x,y])=>`<circle cx="${x}" cy="${y}" r="3" fill="#3B82F6"/>`).join('')}
@@ -808,6 +893,20 @@ function calendarHTML(calData, year, month){
   }
   h+='</div>';
   return h;
+}
+
+function reviewScoreBarsHTML(list){
+  return list.map(s=>`<div style="margin-bottom:10px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+    <span style="font-size:12px;font-weight:600">${esc(s.type)}${s.round?` ${esc(s.round)}회`:''} <span style="color:var(--muted);font-size:10px">${esc(fmtDate(s.date))}</span></span>
+    <span style="font-size:12px;color:var(--blue)">${s.myPct}%</span>
+  </div>
+  <div style="position:relative;background:var(--card);border-radius:4px;height:16px;overflow:hidden;">
+    <div style="height:100%;width:${s.myPct}%;background:var(--blue);opacity:.75;border-radius:4px;"></div>
+    ${s.avgPct!==null?`<div style="position:absolute;top:0;bottom:0;left:${Math.min(s.avgPct,99)}%;width:2px;background:var(--amber);"></div>`:''}
+  </div>
+  <div style="font-size:10px;color:var(--muted);margin-top:3px">${s.rank}등/${s.classSize}명 · ${s.score}/${s.maxScore}점${s.avgPct!==null?` · 학급평균 ${s.avgPct}%`:''}</div>
+</div>`).join('')+`<div style="font-size:10px;color:var(--muted2);margin-top:2px"><span style="color:var(--blue)">■</span> 내 점수 &nbsp;<span style="color:var(--amber)">|</span> 학급평균</div>`;
 }
 
 function tagBarsHTML(engCounts, undSubCounts){
@@ -870,6 +969,7 @@ function renderReviewPanel(r){
   const showCal=document.getElementById('sec-calendar')?.checked!==false;
   const showTags=document.getElementById('sec-tags')?.checked!==false;
   const showEval=document.getElementById('sec-eval')?.checked!==false;
+  const showScores=document.getElementById('sec-scores')?.checked!==false;
   const showMoments=document.getElementById('sec-moments')?.checked!==false;
   const showNext=document.getElementById('sec-next')?.checked!==false;
   const showMsg=document.getElementById('sec-msg')?.checked!==false;
@@ -929,7 +1029,7 @@ ${showEval?`<div class="review-section">
 ${showRadar?`<div class="review-section">
   <div class="review-section-label">역량 레이더 <span style="color:var(--muted2);font-weight:400">(자동 집계)</span></div>
   <div class="radar-wrap">${radarSVG(d.radarAxes,220)}</div>
-  <div style="font-size:10px;color:var(--muted2);text-align:center;margin-top:4px">과제 성실도·성취도는 데이터 축적 후 표시</div>
+  <div style="font-size:10px;color:var(--muted2);text-align:center;margin-top:4px">성취도는 성적 데이터 입력 후 표시</div>
 </div>`:''}
 
 ${showCal?`<div class="review-section">
@@ -940,6 +1040,12 @@ ${showCal?`<div class="review-section">
 ${showTags?`<div class="review-section">
   <div class="review-section-label">관찰 태그 집계 <span style="color:var(--muted2);font-weight:400">(자동 집계)</span></div>
   <div class="review-readonly">${tagBarsHTML(d.engageCounts,d.understandSubCounts)}</div>
+</div>`:''}
+
+${showScores?`<div class="review-section">
+  <div class="review-section-label">성적 추이 <span style="color:var(--muted2);font-weight:400">(자동 집계)</span></div>
+  ${d.scoresList.length?`<div class="review-readonly">${reviewScoreBarsHTML(d.scoresList)}</div>`
+  :'<div class="review-readonly" style="color:var(--muted);font-size:12px;text-align:center;padding:8px 0">이 기간 성적 데이터 없음</div>'}
 </div>`:''}
 
 ${showMoments?`<div class="review-section">
@@ -1089,6 +1195,9 @@ function generateReportHTML(r){
   const calSections=dateRange.months.map(({y,m})=>buildReportCalendar(d.calendarData,y,m)).join('');
   // Tag bars for report
   const tagBars=buildReportTagBars(d.engageCounts,d.understandSubCounts,d.sessionCount);
+  // Scores
+  const showScores=document.getElementById('sec-scores')?.checked!==false;
+  const scoreBars=showScores&&d.scoresList.length?buildReportScoreBars(d.scoresList):'';
   // Moments timeline
   const moments=(ai.moments||[]).filter(m=>m.text);
   // Keywords
@@ -1191,8 +1300,13 @@ ${tagBars?`<div class="section">
   <div class="sec-body">${tagBars}</div>
 </div>`:''}
 
+${scoreBars?`<div class="section">
+  <div class="sec-header"><div class="sec-num">05</div><div class="sec-title">성적 추이</div></div>
+  <div class="sec-body">${scoreBars}</div>
+</div>`:''}
+
 ${moments.length?`<div class="section">
-  <div class="sec-header"><div class="sec-num">05</div><div class="sec-title">선생님이 기억하는 순간</div></div>
+  <div class="sec-header"><div class="sec-num">06</div><div class="sec-title">선생님이 기억하는 순간</div></div>
   <div class="sec-body">
     <div class="timeline">
       ${moments.map(m=>`<div class="tl-item"><div class="tl-dot"></div>${m.date?`<div class="tl-date">${esc(m.date)}</div>`:''}<div class="tl-text">${esc(m.text)}</div></div>`).join('')}
@@ -1201,12 +1315,12 @@ ${moments.length?`<div class="section">
 </div>`:''}
 
 ${keywords.length?`<div class="section">
-  <div class="sec-header"><div class="sec-num">06</div><div class="sec-title">이달의 키워드</div></div>
+  <div class="sec-header"><div class="sec-num">07</div><div class="sec-title">이달의 키워드</div></div>
   <div class="sec-body"><div class="kw-wrap">${keywords.map(k=>`<span class="kw-tag">${esc(k)}</span>`).join('')}</div></div>
 </div>`:''}
 
 ${nextPoints.length?`<div class="section">
-  <div class="sec-header"><div class="sec-num">07</div><div class="sec-title">다음 달 집중 포인트</div></div>
+  <div class="sec-header"><div class="sec-num">08</div><div class="sec-title">다음 달 집중 포인트</div></div>
   <div class="sec-body">
     ${nextPoints.map((p,i)=>`<div class="next-item"><div class="next-num">${i+1}</div><div class="next-text">${esc(p)}</div></div>`).join('')}
   </div>
@@ -1226,10 +1340,11 @@ ${nextPoints.length?`<div class="section">
 
 // Report-specific chart generators (light theme SVG)
 function buildReportRadarSVG(axes,size){
+  const pad=28;
   const cx=size/2, cy=size/2, r=size*0.36;
   const N=5;
-  const labels=['수업 태도','참여도','과제 성실도','이해도','성취도'];
-  const keys=['attitude','engage','homework','understand','achievement'];
+  const labels=['수업 태도','참여도','이해도','성취도','과제 성실도'];
+  const keys=['attitude','engage','understand','achievement','homework'];
   const pt=(i,f)=>{const a=(i*2*Math.PI/N)-Math.PI/2;return[cx+r*f*Math.cos(a),cy+r*f*Math.sin(a)];};
   const grids=[.25,.5,.75,1].map(f=>{const pts=Array.from({length:N},(_,i)=>pt(i,f));return`<polygon points="${pts.map(p=>p.join(',')).join(' ')}" fill="none" stroke="#E2E8F0" stroke-width="1"/>`;}).join('');
   const axesL=Array.from({length:N},(_,i)=>{const[x2,y2]=pt(i,1);return`<line x1="${cx}" y1="${cy}" x2="${x2}" y2="${y2}" stroke="#E2E8F0" stroke-width="1"/>`;}).join('');
@@ -1243,7 +1358,8 @@ function buildReportRadarSVG(axes,size){
     return`<text x="${lx}" y="${ly}" text-anchor="${anchor}" font-size="9.5" fill="#666" dy="3">${l}</text>
 <text x="${lx}" y="${ly+12}" text-anchor="${anchor}" font-size="9" fill="${hasData?'#3B82F6':'#ccc'}" font-weight="700">${hasData?val:'N/A'}</text>`;
   }).join('');
-  return`<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+  // viewBox에 pad 추가 → 라벨이 section overflow:hidden에 잘리지 않음
+  return`<svg width="${size+2*pad}" height="${size+2*pad}" viewBox="${-pad} ${-pad} ${size+2*pad} ${size+2*pad}" xmlns="http://www.w3.org/2000/svg">
 ${grids}${axesL}
 <polygon points="${poly}" fill="#DBEAFE88" stroke="#3B82F6" stroke-width="2" stroke-linejoin="round"/>
 ${dataPts.map(([x,y])=>`<circle cx="${x}" cy="${y}" r="3.5" fill="#3B82F6"/>`).join('')}
@@ -1285,6 +1401,27 @@ function buildReportTagBars(engCounts,undSubCounts,sessionCount){
   <div class="tag-n">${n}회</div>
 </div>`;
   }).join('');
+}
+
+function buildReportScoreBars(scoresList){
+  return scoresList.map(s=>`
+<div style="margin-bottom:14px;">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;">
+    <span style="font-size:13px;font-weight:700;color:#1A1D2E;">${esc(s.type)}${s.round?` ${esc(s.round)}회`:''}</span>
+    <span style="font-size:11px;color:#94A3B8;">${esc(s.date)}</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;">
+    <span style="font-size:11px;color:#555;width:52px;text-align:right;flex-shrink:0;">내 점수</span>
+    <div style="flex:1;background:#F1F3F5;border-radius:5px;height:18px;overflow:hidden;position:relative;">
+      <div style="height:100%;width:${s.myPct}%;background:#3B82F6;border-radius:5px;"></div>
+      ${s.avgPct!==null?`<div style="position:absolute;top:0;bottom:0;left:${Math.min(s.avgPct,99)}%;width:2px;background:#F59E0B;"></div>`:''}
+    </div>
+    <span style="font-size:12px;font-weight:700;color:#3B82F6;width:34px;text-align:right;">${s.myPct}%</span>
+  </div>
+  <div style="font-size:11px;color:#94A3B8;margin-left:60px;">
+    ${s.rank}등/${s.classSize}명 · ${s.score}/${s.maxScore}점${s.avgPct!==null?` · 학급평균 ${s.avgPct}%`:''}
+  </div>
+</div>`).join('')+`<div style="font-size:10px;color:#CBD5E1;margin-top:4px;margin-left:60px;"><span style="color:#3B82F6">■</span> 내 점수 &nbsp;<span style="color:#F59E0B">|</span> 학급평균</div>`;
 }
 
 // ══════════════════════════════════════════════════
