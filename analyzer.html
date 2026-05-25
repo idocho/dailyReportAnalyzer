@@ -236,7 +236,14 @@ hr{border:none;border-top:1px solid var(--border);margin:10px 0;}
           <div class="progress-bar-bg"><div class="progress-bar-fill" id="genProgressBar" style="width:0%"></div></div>
         </div>
       </div>
-      <button id="genBtn" class="btn btn-primary btn-lg" onclick="startGeneration()">✨ 리포트 일괄 생성</button>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <button id="genBtn" class="btn btn-primary btn-lg" onclick="startGeneration()">✨ 리포트 일괄 생성</button>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--muted);user-select:none">
+          <input type="checkbox" id="testModeChk" onchange="testMode=this.checked;updateGenBtn()"
+            style="width:14px;height:14px;cursor:pointer">
+          🧪 테스트 모드 (API 미호출 · 프롬프트 저장)
+        </label>
+      </div>
     </div>
   </div>
 
@@ -286,6 +293,7 @@ let dateRange={start:'',end:'',label:'',year:0,month:0,months:[]};
 let selectedCls=new Set(); // "sheet|cls"
 let settingsOpen=false;
 let generating=false;
+let testMode=false;
 
 const LS = k=>localStorage.getItem(k);
 const SS = (k,v)=>localStorage.setItem(k,v);
@@ -571,6 +579,32 @@ async function startGeneration(){
     }
 
     setProgress(100,'완료!');
+
+    // 테스트 모드: 수집된 프롬프트를 .txt 파일로 저장
+    if(testMode && window._testPrompts?.length){
+      const lines=[];
+      lines.push('='.repeat(60));
+      lines.push(`DRW Analyzer — 프롬프트 덤프 (${new Date().toLocaleString('ko-KR')})`);
+      lines.push(`기간: ${dateRange.label} | 학생 ${window._testPrompts.length}명`);
+      lines.push('='.repeat(60));
+      for(const p of window._testPrompts){
+        lines.push(`\n${'─'.repeat(60)}`);
+        lines.push(`▶ 학생: ${p.name}`);
+        lines.push(`${'─'.repeat(60)}`);
+        lines.push('[SYSTEM]');
+        lines.push(p.system);
+        lines.push('\n[USER]');
+        lines.push(p.user);
+      }
+      lines.push(`\n${'='.repeat(60)}`);
+      const blob=new Blob([lines.join('\n')],{type:'text/plain;charset=utf-8'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download=`drw_prompts_${dateRange.start}_${dateRange.end}.txt`;
+      a.click();
+      window._testPrompts=[];
+    }
+
     setTimeout(()=>{
       document.getElementById('genProgress').style.display='none';
       generating=false;
@@ -830,8 +864,25 @@ ${d.note?`[기존 특이사항 메모 — 반드시 반영]\n${d.note}\n\n`:''}$
   return {system,user};
 }
 
+function mockAiResult(r){
+  return {
+    cover:`${r.name} 학생의 ${dateRange.label} 리포트입니다. [🧪 테스트 모드]`,
+    eval:`[🧪 테스트 모드] 실제 AI 평가가 여기에 표시됩니다. 프롬프트 파일을 Claude 채팅에 붙여넣어 결과를 확인하세요.`,
+    moments:[],
+    keywords:['테스트','모드','확인중'],
+    next_points:['프롬프트 파일 확인','Claude 채팅에 붙여넣기','결과 검토'],
+    teacher_msg:`[🧪 테스트 모드] API 미호출 상태입니다.`,
+  };
+}
+
 async function callClaude(r){
   const{system,user}=buildPrompt(r);
+  if(testMode){
+    // 프롬프트를 전역 수집 버퍼에 추가 (startGeneration에서 일괄 저장)
+    if(!window._testPrompts)window._testPrompts=[];
+    window._testPrompts.push({name:r.name,system:system[0].text,user});
+    return mockAiResult(r);
+  }
   const resp=await fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{
@@ -1164,12 +1215,23 @@ function confirmStudent(idx){
 
 async function regenerateStudent(idx){
   const r=studentReports[idx];
-  if(!r||!claudeKey){toast('Claude API Key가 필요합니다.');return;}
+  if(!r||((!claudeKey)&&!testMode)){toast('Claude API Key가 필요합니다.');return;}
   r.status='generating';
   renderStudentList();
   renderReviewPanel(r);
   try{
+    window._testPrompts=[];
     r.ai=await callClaude(r);
+    if(testMode && window._testPrompts?.length){
+      const p=window._testPrompts[0];
+      const txt=`[SYSTEM]\n${p.system}\n\n[USER]\n${p.user}`;
+      const blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download=`drw_prompt_${r.name}.txt`;
+      a.click();
+      window._testPrompts=[];
+    }
     r.status='editing';
   }catch(e){
     toast('재생성 실패: '+e.message);
