@@ -8,7 +8,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DailyReportAnalyzer v0.1.0</title>
+<title>DailyReportAnalyzer v0.2.0</title>
 <style>
 :root{
   --bg:#0F1117;--card:#1A1D2E;--card2:#222639;--border:#2E3347;
@@ -284,13 +284,16 @@ hr{border:none;border-top:1px solid var(--border);margin:10px 0;}
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
 let fbUrl='', fbPath='', claudeKey='';
-let cfgData=null;
-let allObs={}, allInput={}, allScores={};
+let classesData={};   // classes/{classId} → {group, courses}
+let allStudents={};   // students/{nameKey} → {name, class, ...}
+let allObs={};        // {nameKey: {subject: {date: {...}}}}
+let allInput={};      // {nameKey: {subject: {assign, note}}}
+let allScores={weekly:{}}; // {weekly: {classId: {subject: {testKey: {meta,students}}}}}
 let studentReports=[];
 let currentStudentIdx=-1;
 let currentStep=1;
 let dateRange={start:'',end:'',label:'',year:0,month:0,months:[]};
-let selectedCls=new Set(); // "sheet|cls"
+let selectedCls=new Set(); // classId strings
 let settingsOpen=false;
 let generating=false;
 let testMode=false;
@@ -347,8 +350,8 @@ function saveSettings(){
   if(fbUrl&&fbPath)loadClasses();
 }
 function loadFromDRW(){
-  const u=LS('drw_fb_url')||'';
-  const p=LS('drw_fb_path')||'';
+  const u=LS('drw_db_url')||LS('drw_fb_url')||'';
+  const p=LS('drw_db_path')||LS('drw_fb_path')||'';
   if(u){document.getElementById('sUrl').value=u;}
   if(p){document.getElementById('sPth').value=p;}
   toast(u?'DRW 설정 로드됨':'DRW 설정 없음');
@@ -360,7 +363,7 @@ function toggleSettings(){
 async function testConn(){
   if(!fbUrl||!fbPath){toast('URL과 경로를 먼저 저장하세요.');return;}
   try{
-    const d=await fbGet('config');
+    const d=await fbGet('classes');
     const badge=document.getElementById('connBadge');
     badge.textContent='✓ 연결됨';badge.className='conn-badge ok';
     toast('Firebase 연결 성공 ✓');
@@ -383,46 +386,44 @@ async function loadClasses(){
   const el=document.getElementById('classList');
   el.innerHTML='<div class="loading-msg">반 목록 로드 중...</div>';
   try{
-    cfgData=await fbGet('config');
-    renderClassCards(cfgData);
+    const[clsD,stuD]=await Promise.all([
+      fbGet('classes').catch(()=>({})),
+      fbGet('students').catch(()=>({})),
+    ]);
+    classesData=clsD||{};
+    allStudents=stuD||{};
+    renderClassCards();
     updateGenBtn();
   }catch(e){
     el.innerHTML=`<div class="loading-msg" style="color:var(--red)">로드 실패: ${esc(e.message)}</div>`;
   }
 }
 
-function renderClassCards(cfg){
-  const sheets=cfg?.sheets||{};
+function renderClassCards(){
   const el=document.getElementById('classList');
   let html='<div class="class-grid">';
   let total=0;
-  for(const[sh,sv] of Object.entries(sheets)){
-    const classes=sv?.classes||{};
-    for(const[cls,cd] of Object.entries(classes)){
-      const students=cd?.students||[];
-      const tbs=cd?.textbooks||Object.keys(cd?.tb_grade||{});
-      const key=`${sh}|${cls}`;
-      const sel=selectedCls.has(key);
-      const tb=tbs[0]||'';
-      const gs=cd?.tb_grade?.[tb]||'';
-      html+=`<div class="class-card${sel?' selected':''}" onclick="toggleClass('${esc(sh)}','${esc(cls)}')">
-        <div class="class-card-name">${esc(cls)}</div>
-        <div class="class-card-meta">${esc(sh)}반 · ${students.length}명</div>
-        ${gs?`<div class="class-card-meta">${esc(gs)} ${esc(tb)}</div>`:''}
-      </div>`;
-      total++;
-    }
+  for(const[classId,cd] of Object.entries(classesData)){
+    const stuCount=Object.values(allStudents).filter(s=>s.class===classId).length;
+    const courses=cd.courses||{};
+    const subjects=Object.keys(courses);
+    const sel=selectedCls.has(classId);
+    html+=`<div class="class-card${sel?' selected':''}" onclick="toggleClass('${esc(classId)}')">
+      <div class="class-card-name">${esc(classId)}</div>
+      <div class="class-card-meta">${esc(cd.group||'')}그룹 · ${stuCount}명</div>
+      ${subjects.length?`<div class="class-card-meta">${esc(subjects.join(' / '))}</div>`:''}
+    </div>`;
+    total++;
   }
   html+='</div>';
   if(total===0)html='<div class="loading-msg">등록된 반이 없습니다.</div>';
   el.innerHTML=html;
 }
 
-function toggleClass(sh,cls){
-  const key=`${sh}|${cls}`;
-  if(selectedCls.has(key))selectedCls.delete(key);
-  else selectedCls.add(key);
-  if(cfgData)renderClassCards(cfgData);
+function toggleClass(classId){
+  if(selectedCls.has(classId))selectedCls.delete(classId);
+  else selectedCls.add(classId);
+  renderClassCards();
   updateGenBtn();
 }
 
@@ -485,14 +486,7 @@ function selectPeriod(type){
 }
 
 function countSelectedStudents(){
-  if(!cfgData)return 0;
-  let n=0;
-  for(const key of selectedCls){
-    const[sh,cls]=key.split('|');
-    const students=cfgData?.sheets?.[sh]?.classes?.[cls]?.students||[];
-    n+=students.length;
-  }
-  return n;
+  return Object.values(allStudents).filter(s=>selectedCls.has(s.class)).length;
 }
 
 function updateGenBtn(){
@@ -520,31 +514,28 @@ async function startGeneration(){
   document.getElementById('genProgress').style.display='block';
 
   try{
-    // Load Firebase data
-    setProgress(0,'Firebase 데이터 로드 중...');
-    const [obs, input, cfg, scores]=await Promise.all([
-      fbGet('obs').catch(()=>({})),
-      fbGet('input').catch(()=>({})),
-      cfgData?Promise.resolve(cfgData):fbGet('config').catch(()=>({})),
-      fbGet('scores').catch(()=>({})),
-    ]);
-    allObs=obs||{};
-    allInput=input||{};
-    allScores=scores||{};
-    if(!cfgData)cfgData=cfg;
+    // 1. Ensure classes/students loaded
+    setProgress(0,'Firebase 반·학생 데이터 로드 중...');
+    if(!Object.keys(classesData).length){
+      const[clsD,stuD]=await Promise.all([
+        fbGet('classes').catch(()=>({})),
+        fbGet('students').catch(()=>({})),
+      ]);
+      classesData=clsD||{};
+      allStudents=stuD||{};
+    }
 
-    // Build student list
+    // 2. Build student list from selected classes
     studentReports=[];
-    for(const key of selectedCls){
-      const[sh,cls]=key.split('|');
-      const cd=cfgData?.sheets?.[sh]?.classes?.[cls]||{};
-      const students=cd?.students||[];
-      const tbs=cd?.textbooks||Object.keys(cd?.tb_grade||{});
-      const tb=tbs[0]||'';
-      const gradeSem=cd?.tb_grade?.[tb]||'';
-      for(const s of students){
+    for(const classId of selectedCls){
+      const cd=classesData[classId]||{};
+      const courses=cd.courses||{};
+      const subjects=Object.keys(courses);
+      const classStudents=Object.entries(allStudents).filter(([,v])=>v.class===classId);
+      for(const[nameKey,v] of classStudents){
         studentReports.push({
-          name:s.name, sheet:sh, cls, tb, gradeSem,
+          nameKey, name:v.name||nameKey,
+          classId, subjects, courses,
           data:null, ai:null, status:'pending'
         });
       }
@@ -553,15 +544,31 @@ async function startGeneration(){
     const total=studentReports.length;
     if(total===0){toast('학생이 없습니다.');generating=false;updateGenBtn();return;}
 
-    // Process each student
+    // 3. Bulk fetch obs/input per nameKey + scores/weekly per classId
+    setProgress(5,'학생 관찰·성적 데이터 로드 중...');
+    const nameKeys=[...new Set(studentReports.map(r=>r.nameKey))];
+    const classIds=[...selectedCls];
+    const[obsRes,inputRes,scoresRes]=await Promise.all([
+      Promise.all(nameKeys.map(nk=>fbGet(`obs/${nk}`).catch(()=>null))),
+      Promise.all(nameKeys.map(nk=>fbGet(`input/${nk}`).catch(()=>null))),
+      Promise.all(classIds.map(cid=>fbGet(`scores/weekly/${cid}`).catch(()=>null))),
+    ]);
+    allObs={};
+    nameKeys.forEach((nk,i)=>{if(obsRes[i])allObs[nk]=obsRes[i];});
+    allInput={};
+    nameKeys.forEach((nk,i)=>{if(inputRes[i])allInput[nk]=inputRes[i];});
+    allScores={weekly:{}};
+    classIds.forEach((cid,i)=>{if(scoresRes[i])allScores.weekly[cid]=scoresRes[i];});
+
+    // 4. Process each student
     for(let i=0;i<studentReports.length;i++){
       const r=studentReports[i];
       r.status='generating';
       renderStudentList();
-      setProgress(Math.round(i/total*100), `(${i+1}/${total}) ${r.name} 리포트 생성 중...`);
+      setProgress(Math.round(10+i/total*85), `(${i+1}/${total}) ${r.name} 리포트 생성 중...`);
 
       // Aggregate data
-      r.data=aggregateStudentData(r.name,r.sheet,r.cls,r.tb,r.gradeSem);
+      r.data=aggregateStudentData(r);
 
       // Call Claude
       try{
@@ -627,18 +634,44 @@ function setProgress(pct,msg){
 }
 
 // ══════════════════════════════════════════════════
-//  DATA AGGREGATION
+//  DATA AGGREGATION (v2.0 — nameKey + subject-based)
 // ══════════════════════════════════════════════════
-function aggregateStudentData(name, sh, cls, tb, gradeSem){
-  const okey=`${sh}|${cls}|${name}|${tb}`;  // 4-part (현재 DRW 형식)
-  const okey3=`${sh}|${cls}|${name}`;       // 3-part (구형 호환)
-  const ikey=`${sh}|${cls}|${name}|${tb}`;
-  const nkey=`${sh}|${cls}|${name}|__note__`;
+function aggregateStudentData(r){
+  const{nameKey,classId,subjects}=r;
+  const obsForStudent=allObs[nameKey]||{};
+  const inputForStudent=allInput[nameKey]||{};
 
-  // Get obs data for this student
-  const obs=allObs[okey]||allObs[okey3]||{};
+  // Merge obs across all subjects by date (condition/understand: conservative; arrays: union)
+  const condOrder=['bad','low','normal','good','great'];
+  const undOrder=['hard','confused','normal_u','good','top'];
+  const hwOrder=['none','little','half','most','done'];
+  const mergedObs={};
+  for(const subject of subjects){
+    for(const[date,data] of Object.entries(obsForStudent[subject]||{})){
+      if(!mergedObs[date]){
+        mergedObs[date]={...data};
+      }else{
+        const ei=condOrder.indexOf(mergedObs[date].condition||'normal');
+        const ni=condOrder.indexOf(data.condition||'normal');
+        if(ni<ei)mergedObs[date].condition=data.condition;
+        const eui=undOrder.indexOf(mergedObs[date].understand||'normal_u');
+        const nui=undOrder.indexOf(data.understand||'normal_u');
+        if(nui<eui)mergedObs[date].understand=data.understand;
+        const ehi=hwOrder.indexOf(mergedObs[date].assign_grade||'done');
+        const nhi=hwOrder.indexOf(data.assign_grade||'done');
+        if(nhi<ehi)mergedObs[date].assign_grade=data.assign_grade;
+        for(const field of['understand_sub','engage','caution','extra','highlight','assign_tags']){
+          const a=tagArr(mergedObs[date][field]);
+          const b=tagArr(data[field]);
+          const merged=[...new Set([...a,...b])];
+          if(merged.length)mergedObs[date][field]=merged;
+        }
+      }
+    }
+  }
+
   // Filter by date range
-  const sessions=Object.entries(obs)
+  const sessions=Object.entries(mergedObs)
     .filter(([d])=>d>=dateRange.start&&d<=dateRange.end)
     .sort(([a],[b])=>a.localeCompare(b));
 
@@ -690,7 +723,7 @@ function aggregateStudentData(name, sh, cls, tb, gradeSem){
   const undAvg=undRecorded>0?['top','good','normal_u','confused','hard'].reduce((s,k)=>s+undScore[k]*(und[k]||0),0)/undRecorded:65;
   const undBonus=Math.min(15,Math.round(undSub.self_solve/safe*10+undSub.retry/safe*7+hl.mastered/safe*8));
   const understand=Math.min(100,Math.round(undAvg+undBonus));
-  const scoresList=aggregateStudentScores(name,sh,cls);
+  const scoresList=aggregateStudentScores(r);
   // ⑤ 성취성장: 백분위60% + 원점수비율40% + 하이라이트 보너스(최대+10)
   const recentN=Math.min(3,scoresList.length);
   const recent=scoresList.slice(-recentN);
@@ -699,9 +732,13 @@ function aggregateStudentData(name, sh, cls, tb, gradeSem){
   const hlBonus=Math.min(10,Math.round((hl.perfect+hl.improved)/safe*15));
   const achievement=scoresList.length>0?Math.min(100,Math.round(0.6*percentileAvg+0.4*rawPctAvg+hlBonus)):0;
 
-  // Current memo
-  const note=allInput[nkey]?.note||allInput[nkey]?.memo||'';
-  const assign=allInput[ikey]?.assign||'';
+  // Input: aggregate across subjects
+  let assign='',note='';
+  for(const subject of subjects){
+    const inp=inputForStudent[subject]||{};
+    if(inp.assign&&!assign)assign=inp.assign;
+    if(inp.note)note=note?note+' / '+inp.note:inp.note;
+  }
 
   // Dates with highlights (for AI moments)
   const highlightDates=sessions
@@ -712,7 +749,7 @@ function aggregateStudentData(name, sh, cls, tb, gradeSem){
     .map(([date,d])=>({date,tags:d.highlight}));
 
   return {
-    name,sh,cls,tb,gradeSem,
+    nameKey, name:r.name, classId, subjects,
     sessionCount:N,
     sessionDates:sessions.map(([d])=>d),
     conditionCounts:cond,
@@ -740,28 +777,32 @@ function aggregateStudentData(name, sh, cls, tb, gradeSem){
 }
 
 // ══════════════════════════════════════════════════
-//  SCORES AGGREGATION
+//  SCORES AGGREGATION (v2.0 — weekly/{classId}/{subject}/{testKey})
 // ══════════════════════════════════════════════════
-function aggregateStudentScores(name,sh,cls){
-  const clsKey=`${sh}|${cls}`;
-  const tests=allScores[clsKey]||{};
+function aggregateStudentScores(r){
+  const{nameKey,classId,subjects}=r;
   const result=[];
-  for(const[testKey,t] of Object.entries(tests)){
-    if(!t||!t.date)continue;
-    if(t.date<dateRange.start||t.date>dateRange.end)continue;
-    const allVals=Object.values(t.students||{}).filter(v=>v!==''&&v!==null&&!isNaN(v)).map(Number);
-    const myRaw=(t.students||{})[name];
-    if(myRaw===undefined||myRaw===null||myRaw==='')continue;
-    const myScore=Number(myRaw);
-    const maxScore=t.max_score||100;
-    const myPct=Math.round((myScore/maxScore)*100);
-    const classAvg=allVals.length>0?allVals.reduce((a,b)=>a+b,0)/allVals.length:null;
-    const avgPct=classAvg!==null?Math.round((classAvg/maxScore)*100):null;
-    const rank=allVals.filter(s=>s>myScore).length+1;
-    const classSize=allVals.length;
-    const percentile=classSize>1?Math.round(((classSize-rank)/(classSize-1))*100):100;
-    result.push({testKey,type:t.type||'',round:t.round||'',date:t.date,
-      score:myScore,maxScore,myPct,avgPct,classSize,rank,percentile});
+  const weeklyForClass=allScores.weekly?.[classId]||{};
+  for(const subject of subjects){
+    const tests=weeklyForClass[subject]||{};
+    for(const[testKey,t] of Object.entries(tests)){
+      if(!t||!t.meta)continue;
+      const date=t.meta.date;
+      if(!date||date<dateRange.start||date>dateRange.end)continue;
+      const allVals=Object.values(t.students||{}).filter(v=>v!==''&&v!==null&&!isNaN(v)).map(Number);
+      const myRaw=(t.students||{})[nameKey];
+      if(myRaw===undefined||myRaw===null||myRaw==='')continue;
+      const myScore=Number(myRaw);
+      const maxScore=t.meta.max_score||100;
+      const myPct=Math.round((myScore/maxScore)*100);
+      const classAvg=allVals.length>0?allVals.reduce((a,b)=>a+b,0)/allVals.length:null;
+      const avgPct=classAvg!==null?Math.round((classAvg/maxScore)*100):null;
+      const rank=allVals.filter(s=>s>myScore).length+1;
+      const classSize=allVals.length;
+      const percentile=classSize>1?Math.round(((classSize-rank)/(classSize-1))*100):100;
+      result.push({testKey,subject,type:t.meta.type||'',round:t.meta.round||'',date,
+        score:myScore,maxScore,myPct,avgPct,classSize,rank,percentile});
+    }
   }
   return result.sort((a,b)=>a.date.localeCompare(b.date));
 }
@@ -841,7 +882,7 @@ JSON 형식 엄수. 모든 문자열 값은 한국어. 배열·숫자 올바른 
 
   const user=`[학생 정보]
 이름: ${d.name}
-반: ${r.cls} (${r.sh}반) · 교재: ${r.tb||'미지정'} · 과정: ${r.gradeSem||'미지정'}
+반: ${r.classId} · 과목: ${(r.subjects||[]).join(', ')||'미지정'}
 분석 기간: ${dateRange.label}
 총 수업 횟수: ${N}회
 
@@ -1113,7 +1154,7 @@ function renderReviewPanel(r){
 <div class="review-panel-header">
   <div>
     <div class="review-panel-title">${esc(r.name)}</div>
-    <div style="font-size:11px;color:var(--muted)">${esc(r.cls)} · ${esc(r.tb)} · ${dateRange.label} · ${d.sessionCount}회 수업</div>
+    <div style="font-size:11px;color:var(--muted)">${esc(r.classId)} · ${esc((r.subjects||[]).join('/'))} · ${dateRange.label} · ${d.sessionCount}회 수업</div>
   </div>
   <div class="review-panel-actions">
     <button class="btn btn-sm" onclick="regenerateStudent(${currentStudentIdx})">↺ 재생성</button>
@@ -1273,7 +1314,7 @@ function renderOutputList(){
     return`<div class="output-item">
   <div>
     <div class="output-item-info">${esc(r.name)}</div>
-    <div class="output-item-meta">${esc(r.cls)} · ${esc(r.tb)} · ${dateRange.label}</div>
+    <div class="output-item-meta">${esc(r.classId)} · ${esc((r.subjects||[]).join('/'))} · ${dateRange.label}</div>
   </div>
   <div class="output-item-actions">
     <button class="btn btn-sm" onclick="previewReport(${idx})">👁 미리보기</button>
@@ -1311,8 +1352,9 @@ function downloadReport(idx){
 function generateReportHTML(r){
   const d=r.data;
   const ai=r.ai||defaultAI(r);
-  const school=cfgData?.school_name||'수학학원';
-  const teacher=cfgData?.sheets?.[r.sheet]?.classes?.[r.cls]?.instructor||'선생님';
+  const school='수학학원';
+  const firstSubject=(r.subjects||[])[0]||'';
+  const teacher=classesData[r.classId]?.courses?.[firstSubject]?.instructor||'선생님';
   const sentDate=new Date().toLocaleDateString('ko-KR');
 
   // Radar SVG for report (light theme)
@@ -1392,7 +1434,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Noto Sa
 <div class="cover">
   <div class="cover-badge">📊 ${esc(school)} · 월간 리포트</div>
   <div class="cover-name">${esc(r.name)}</div>
-  <div class="cover-sub">${esc(r.cls)} · ${esc(r.tb)} · ${esc(dateRange.label)}</div>
+  <div class="cover-sub">${esc(r.classId)} · ${esc((r.subjects||[]).join('/'))} · ${esc(dateRange.label)}</div>
   ${ai.cover?`<div class="cover-quote">${esc(ai.cover)}</div>`:''}
 </div>
 
