@@ -26,14 +26,16 @@ DailyReportWizard 2.0이 Firebase에 축적한 수업 관찰 데이터를 기반
 ## Firebase 데이터 구조 (DRW 2.0 공유)
 
 ```
-config/sheets/           학생 명단
-input/{sh}|{cls}|{name}|{tb}   과제수행도 (현재값만)
-input/{sh}|{cls}|{name}|__note__  특이사항 메모
-obs/{sh}|{cls}|{name}/{YYYY-MM-DD}  수업 관찰 태그 (날짜별 히스토리)
+students/{nameKey}            학생 명단 {name, class}  (nameKey = 출결번호, unique)
+classes/{classId}             학급 {group, courses:{subject:{curriculum}}}
+input/{nameKey}/{subject}     과제수행도 + 특이사항 {assign, note}
+obs/{nameKey}/{subject}/{YYYY-MM-DD}  수업 관찰 태그 (날짜별 히스토리)
   condition, understand, understand_sub[], engage[], caution[], extra[], highlight[]
-scores/                  시험 점수 (미구현)
-session/class_data/      진도/과제
+scores/weekly/{classId}/{subject}/{testKey}   주간 시험 점수
+session/class_data/{classId|subject}          반 공통 진도/과제 {progress, homework}
 ```
+
+> v2.0 student-centric. nameKey 가 곧 학생 식별자(출결번호). 구 composite `{sheet}|{cls}|{name}` 키 폐기됨.
 
 ## 태그 파싱 주의
 Firebase는 배열을 `{"0":"val","1":"val"}` 형태로 반환 가능.  
