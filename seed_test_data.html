@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DRW 테스트 시드 생성기 · 3개월 비포애프터</title>
+<style>
+  :root{--bg:#0F1117;--card:#171A23;--card2:#1E222D;--border:#2E3347;--text:#E2E8F0;--muted:#94A3B8;--muted2:#64748B;--blue:#3B82F6;--green:#22C55E;--red:#EF4444;--amber:#F59E0B;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:'Segoe UI','Malgun Gothic',sans-serif;font-size:14px;line-height:1.5;}
+  .wrap{max-width:1100px;margin:0 auto;padding:24px;}
+  h1{font-size:20px;margin:0 0 4px;}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:20px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:16px;}
+  .card-title{font-weight:700;margin-bottom:12px;font-size:15px;}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
+  input[type=text],input[type=url]{width:100%;padding:8px 10px;background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:13px;}
+  .row{display:flex;gap:12px;flex-wrap:wrap;}
+  .row>div{flex:1;min-width:220px;}
+  .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;}
+  button{padding:9px 18px;border-radius:7px;border:1px solid var(--border);background:var(--card2);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;}
+  button:hover{border-color:var(--blue);}
+  .btn-primary{background:var(--blue);border-color:var(--blue);color:#fff;}
+  .btn-danger{background:var(--red);border-color:var(--red);color:#fff;}
+  .btn-ghost{background:transparent;}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;}
+  th,td{border:1px solid var(--border);padding:5px 8px;text-align:center;}
+  th{background:var(--card2);color:var(--muted);font-weight:600;}
+  td.name{text-align:left;white-space:nowrap;font-weight:600;}
+  .up{color:var(--green);font-weight:700;}
+  .down{color:var(--red);font-weight:700;}
+  .flat{color:var(--muted2);}
+  .persona-tag{font-size:10px;color:var(--muted2);font-weight:400;}
+  #log{font-family:Consolas,monospace;font-size:12px;background:#0B0D12;border:1px solid var(--border);border-radius:6px;padding:10px;max-height:240px;overflow:auto;white-space:pre-wrap;}
+  .ok{color:var(--green);} .err{color:var(--red);} .warn{color:var(--amber);}
+  .hint{font-size:12px;color:var(--muted);margin-top:8px;}
+  code{background:var(--card2);padding:1px 5px;border-radius:4px;font-size:12px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🌱 DRW 테스트 시드 생성기</h1>
+  <div class="sub">다양한 페르소나 6명 · 3개월(2026-03 ~ 2026-05) · 최초 1개월 vs 최근 1개월 비교가 가시적으로 보이는 데이터. <b>읽기전용 analyzer로는 못 쓰므로 이 도구로 DB에 적용.</b></div>
+
+  <div class="card">
+    <div class="card-title">① Firebase 설정</div>
+    <div class="row">
+      <div>
+        <label>Database URL</label>
+        <input type="url" id="fbUrl" placeholder="https://your-project-default-rtdb.firebaseio.com">
+      </div>
+      <div>
+        <label>경로 (path)</label>
+        <input type="text" id="fbPath" placeholder="예: drw2 또는 dailyReport">
+      </div>
+      <div>
+        <label>인증 토큰 (선택 · 규칙이 공개면 비워둠)</label>
+        <input type="text" id="fbAuth" placeholder="?auth= 에 붙는 토큰">
+      </div>
+    </div>
+    <div class="hint">analyzer를 쓰던 같은 브라우저면 URL·경로가 자동 입력됩니다(localStorage <code>drw_fb_url</code>/<code>drw_fb_path</code>).</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">② 생성될 데이터 미리보기 <span class="persona-tag">(3월→5월 예상 레이더 축 · analyzer와 동일 공식)</span></div>
+    <div id="preview">생성 중…</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">③ 실행</div>
+    <div class="btns">
+      <button class="btn-primary" onclick="applySeed()">⬆ DB에 시드 적용</button>
+      <button class="btn-danger" onclick="deleteSeed()">🗑 시드 삭제(롤백)</button>
+      <button class="btn-ghost" onclick="regen()">↻ 다시 생성</button>
+    </div>
+    <div class="hint">적용 후 analyzer 열기 → 반 <code>ZZ_TEST_3M</code> 선택 → 기간 <b>직접 입력 2026-05-01 ~ 2026-05-31</b> → 레이더 비교 기간 <b>직접 지정 2026-03-01 ~ 2026-03-31</b>.</div>
+    <div style="margin-top:12px"><div id="log">대기 중…</div></div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════
+//  설정/상수
+// ════════════════════════════════════════════
+const CLASS_ID='ZZ_TEST_3M';
+const CLASS_GROUP='테스트';
+const SUBJECT='중2수학';
+const MONTHS=['2026-03','2026-04','2026-05'];
+const padZ=n=>String(n).padStart(2,'0');
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+// 결정론적 PRNG
+function mulberry32(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function wpick(rng,obj){const ks=Object.keys(obj);const tot=ks.reduce((s,k)=>s+obj[k],0);let x=rng()*tot;for(const k of ks){x-=obj[k];if(x<=0)return k;}return ks[ks.length-1];}
+function chance(rng,p){return rng()<(p||0);}
+function dim(y,m){return new Date(y,m,0).getDate();}
+function sessionDates(mk){const[y,m]=mk.split('-').map(Number);const out=[];for(let d=1;d<=dim(y,m);d++){const wd=new Date(y,m-1,d).getDay();if(wd===1||wd===4)out.push(`${mk}-${padZ(d)}`);}return out;}
+
+// ════════════════════════════════════════════
+//  페르소나 프로필 (월별 가중치/확률)
+//  cond: great/good/normal/low/bad · und: top/good/normal_u/confused/hard · assign: done/most/half/little/none
+// ════════════════════════════════════════════
+function P(cond,und,assign,p){return{cond,und,assign,p:p||{}};}
+const PERSONAS=[
+  {nk:'ZTEST_01',name:'도전이',tag:'성장형(전 영역 ▲)',score:{'2026-03':55,'2026-04':72,'2026-05':90},
+   input:{assign:'기초 개념 워크북',note:'초반 어려움을 겪었으나 점차 적극적으로 변화'},
+   prof:{
+    '2026-03':P({low:3,normal:3,bad:1,good:1},{hard:3,confused:3,normal_u:1},{little:3,half:3,none:1,most:1},{question:.2,help:.1,sleepy:.2,chat:.2,confused:.4,retry:.2,effort:.3}),
+    '2026-04':P({normal:3,good:2,low:1},{confused:2,normal_u:3,good:1},{half:2,most:2,done:1,little:1},{present:.4,question:.4,help:.2,preview:.2,error_fix:.3,retry:.3,self_solve:.2,improved:.3,effort:.3,chat:.1}),
+    '2026-05':P({good:3,great:2,normal:1},{good:3,top:2,normal_u:1},{done:4,most:2},{present:.7,question:.6,help:.4,preview:.4,error_fix:.4,self_study:.3,self_solve:.5,retry:.3,improved:.4,mastered:.4,perfect:.2,effort:.4}),
+   }},
+  {nk:'ZTEST_02',name:'번아웃',tag:'하락형(태도·참여 ▼)',score:{'2026-03':92,'2026-04':84,'2026-05':72},
+   input:{assign:'심화 문제집',note:'학기 후반 피로 누적, 컨디션 관리가 필요'},
+   prof:{
+    '2026-03':P({good:3,great:2,normal:1},{good:3,top:1,normal_u:1},{done:4,most:2},{present:.6,question:.5,help:.4,preview:.3,error_fix:.3,self_solve:.4,mastered:.3,perfect:.2}),
+    '2026-04':P({good:2,normal:3,low:1},{good:2,normal_u:2,confused:1},{most:2,done:1,half:2},{present:.4,question:.3,help:.2,sleepy:.3,late:.2,error_fix:.1,improved:.1}),
+    '2026-05':P({normal:3,low:3,bad:1},{normal_u:3,confused:2,good:1},{half:2,most:2,little:1},{present:.2,question:.1,sleepy:.5,late:.4,chat:.3,attitude:.1}),
+   }},
+  {nk:'ZTEST_03',name:'한결이',tag:'꾸준 상위(변화 ≈0)',score:{'2026-03':86,'2026-04':87,'2026-05':88},
+   input:{assign:'표준 문제집',note:'꾸준하고 안정적인 학습 태도 유지'},
+   prof:(()=>{const s=P({good:4,great:2,normal:1},{good:3,top:2,normal_u:1},{done:6,most:1},{present:.7,question:.5,help:.5,preview:.55,error_fix:.55,self_solve:.55,self_study:.45,mastered:.4,improved:.2,effort:.3});return{'2026-03':s,'2026-04':s,'2026-05':s};})()},
+  {nk:'ZTEST_04',name:'지각이',tag:'늦깎이(태도·자기주도 ▲)',score:{'2026-03':60,'2026-04':68,'2026-05':80},
+   input:{assign:'기본 문제집',note:'초기 지각·집중 문제 → 후반 크게 개선'},
+   prof:{
+    '2026-03':P({normal:3,low:3,bad:1},{normal_u:3,confused:2},{little:3,half:2,none:1},{late:.7,sleepy:.4,chat:.3,present:.2,question:.1}),
+    '2026-04':P({normal:4,low:1,good:1},{normal_u:3,good:1,confused:1},{half:2,most:2,little:1},{late:.4,sleepy:.2,present:.3,question:.2,help:.2,preview:.1,improved:.2,effort:.2}),
+    '2026-05':P({good:3,normal:3},{good:2,normal_u:3},{most:3,done:2,half:1},{late:.05,present:.5,question:.3,help:.3,preview:.3,self_study:.3,self_solve:.2,error_fix:.2,improved:.3,effort:.3}),
+   }},
+  {nk:'ZTEST_05',name:'질문왕',tag:'참여 폭증(참여 ▲▲)',score:{'2026-03':70,'2026-04':74,'2026-05':82},
+   input:{assign:'표준 문제집',note:'질문과 수업 참여가 크게 늘어남'},
+   prof:{
+    '2026-03':P({normal:3,good:2,low:1},{normal_u:3,good:1,confused:1},{most:2,half:2,done:1},{present:.2,question:.15,help:.1,self_solve:.1,effort:.2}),
+    '2026-04':P({good:2,normal:3},{normal_u:2,good:2},{most:3,done:1},{present:.5,question:.5,help:.3,preview:.2,error_fix:.2,improved:.2}),
+    '2026-05':P({good:3,normal:2,great:1},{good:3,normal_u:1,top:1},{done:3,most:2},{present:.85,question:.8,help:.6,preview:.4,error_fix:.4,self_solve:.4,mastered:.2,improved:.3,effort:.4}),
+   }},
+  {nk:'ZTEST_06',name:'점수반전',tag:'성취 급상승(성취 ▲▲)',score:{'2026-03':50,'2026-04':70,'2026-05':95},
+   input:{assign:'개념+유형서',note:'성적이 큰 폭으로 상승'},
+   prof:{
+    '2026-03':P({normal:3,good:2,low:1},{normal_u:3,confused:2,good:1},{half:2,most:2,little:1},{present:.3,question:.2,help:.2,effort:.3,confused:.2}),
+    '2026-04':P({good:2,normal:3},{normal_u:2,good:2},{most:3,done:1},{present:.4,question:.3,help:.2,preview:.2,error_fix:.2,improved:.3,self_solve:.2}),
+    '2026-05':P({good:3,great:1,normal:2},{good:3,top:2,normal_u:1},{done:3,most:2},{present:.5,question:.4,help:.3,preview:.3,error_fix:.3,self_solve:.4,mastered:.3,perfect:.3,improved:.3}),
+   }},
+];
+
+// 주간 시험 일정 (반 전체 코호트 → 백분위 산출)
+const TESTS=[
+  {key:'t_2026_03_w2',date:'2026-03-13',round:1,mk:'2026-03'},
+  {key:'t_2026_03_w4',date:'2026-03-27',round:2,mk:'2026-03'},
+  {key:'t_2026_04_w2',date:'2026-04-10',round:3,mk:'2026-04'},
+  {key:'t_2026_04_w4',date:'2026-04-24',round:4,mk:'2026-04'},
+  {key:'t_2026_05_w2',date:'2026-05-08',round:5,mk:'2026-05'},
+  {key:'t_2026_05_w3',date:'2026-05-22',round:6,mk:'2026-05'},
+];
+
+// ════════════════════════════════════════════
+//  세션 생성
+// ════════════════════════════════════════════
+function genSession(rng,prof){
+  const o={condition:wpick(rng,prof.cond),understand:wpick(rng,prof.und),assign_grade:wpick(rng,prof.assign)};
+  const p=prof.p;
+  const push=(field,tags)=>{const a=tags.filter(t=>chance(rng,p[t]||0));if(a.length)o[field]=a;};
+  push('engage',['present','question','help','preview','error_fix']);
+  push('caution',['sleepy','chat','attitude','late']);
+  push('extra',['self_study','weekly_test','retest']);
+  push('highlight',['perfect','improved','mastered','effort']);
+  push('understand_sub',['self_solve','retry','confused']);
+  return o;
+}
+
+// 전체 데이터셋 생성 (결정론적)
+function buildDataset(){
+  const classes={[CLASS_ID]:{group:CLASS_GROUP,courses:{[SUBJECT]:{curriculum:'중2-1 (테스트용)'}}}};
+  const students={};
+  const obs={};   // nk → {subject:{date:obj}}
+  const input={}; // nk → {subject:{assign,note}}
+  PERSONAS.forEach((per,pi)=>{
+    students[per.nk]={name:per.name,class:CLASS_ID};
+    input[per.nk]={[SUBJECT]:{assign:per.input.assign,note:per.input.note}};
+    const bySubject={};
+    MONTHS.forEach(mk=>{
+      const rng=mulberry32(1000*(pi+1)+Number(mk.replace('-','')));
+      sessionDates(mk).forEach(date=>{bySubject[date]=genSession(rng,per.prof[mk]);});
+    });
+    obs[per.nk]={[SUBJECT]:bySubject};
+  });
+  // scores/weekly/{cid}/{subject}/{testKey}
+  const weekly={[SUBJECT]:{}};
+  TESTS.forEach(t=>{
+    const stu={};
+    PERSONAS.forEach((per,pi)=>{
+      const base=per.score[t.mk];
+      const nrng=mulberry32(7777*(pi+1)+t.round);
+      stu[per.nk]=clamp(Math.round(base+(nrng()*8-4)),0,100);
+    });
+    weekly[SUBJECT][t.key]={meta:{date:t.date,max_score:100,type:'주간평가',round:t.round},students:stu};
+  });
+  const scores={weekly:{[CLASS_ID]:weekly}};
+  return{classes,students,obs,input,scores};
+}
+
+// ════════════════════════════════════════════
+//  레이더 축 계산 (analyzer computeWindowData와 동일 공식 — 미리보기 검증용)
+// ════════════════════════════════════════════
+function scoresForMonth(ds,nk,mk){
+  const weekly=ds.scores.weekly[CLASS_ID][SUBJECT];
+  const out=[];
+  TESTS.filter(t=>t.mk===mk).forEach(t=>{
+    const T=weekly[t.key];const vals=Object.values(T.students);const my=T.students[nk];
+    const myPct=Math.round((my/T.meta.max_score)*100);
+    const rank=vals.filter(s=>s>my).length+1;const n=vals.length;
+    const percentile=n>1?Math.round(((n-rank)/(n-1))*100):100;
+    out.push({myPct,percentile,date:t.date});
+  });
+  return out.sort((a,b)=>a.date.localeCompare(b.date));
+}
+function axesForMonth(ds,nk,mk){
+  const bySub=ds.obs[nk][SUBJECT];
+  const sessions=Object.entries(bySub).filter(([d])=>d.slice(0,7)===mk);
+  const N=sessions.length,safe=N||1;
+  const cond={great:0,good:0,normal:0,low:0,bad:0},und={top:0,good:0,normal_u:0,confused:0,hard:0};
+  const undSub={self_solve:0,retry:0,confused:0},eng={present:0,question:0,help:0,preview:0,error_fix:0};
+  const caut={sleepy:0,chat:0,attitude:0,late:0},extra={self_study:0,weekly_test:0,retest:0};
+  const hl={perfect:0,improved:0,mastered:0,effort:0};
+  const arr=v=>Array.isArray(v)?v:[];
+  for(const[,d] of sessions){
+    if(cond[d.condition]!==undefined)cond[d.condition]++;
+    if(und[d.understand]!==undefined)und[d.understand]++;
+    for(const k of arr(d.understand_sub))if(undSub[k]!==undefined)undSub[k]++;
+    for(const k of arr(d.engage))if(eng[k]!==undefined)eng[k]++;
+    for(const k of arr(d.caution))if(caut[k]!==undefined)caut[k]++;
+    for(const k of arr(d.extra))if(extra[k]!==undefined)extra[k]++;
+    for(const k of arr(d.highlight))if(hl[k]!==undefined)hl[k]++;
+  }
+  const condScore={great:95,good:80,normal:65,low:45,bad:25};
+  const condRec=Object.values(cond).reduce((a,b)=>a+b,0)||safe;
+  const condAvg=['great','good','normal','low','bad'].reduce((s,k)=>s+condScore[k]*cond[k],0)/condRec;
+  const cautPen=(caut.late*8+caut.sleepy*5+caut.chat*6+caut.attitude*10)/safe;
+  const attitude=Math.max(20,Math.min(100,Math.round(condAvg-cautPen)));
+  const engRate=(eng.present*14+eng.question*10+eng.help*6)/safe;
+  const engage=35+Math.min(50,Math.round(engRate*8));
+  const hwGrade={done:100,most:80,half:50,little:25,none:0};
+  const hwScores=sessions.map(([,d])=>hwGrade[d.assign_grade]).filter(v=>v!==undefined);
+  const hwAvg=hwScores.length?hwScores.reduce((a,b)=>a+b,0)/hwScores.length:50;
+  const autoB=Math.min(30,Math.round(eng.preview/safe*18+extra.self_study/safe*15+eng.error_fix/safe*12+undSub.retry/safe*10));
+  const autonomy=Math.min(100,Math.round(hwAvg*0.7)+autoB);
+  const undScore={top:95,good:80,normal_u:65,confused:45,hard:28};
+  const undRec=['top','good','normal_u','confused','hard'].reduce((s,k)=>s+und[k],0);
+  const undAvg=undRec>0?['top','good','normal_u','confused','hard'].reduce((s,k)=>s+undScore[k]*und[k],0)/undRec:65;
+  const undBonus=Math.min(15,Math.round(undSub.self_solve/safe*10+undSub.retry/safe*7+hl.mastered/safe*8));
+  const understand=Math.min(100,Math.round(undAvg+undBonus));
+  const sl=scoresForMonth(ds,nk,mk);const rn=Math.min(3,sl.length);const rc=sl.slice(-rn);
+  const pAvg=rn>0?rc.reduce((a,s)=>a+s.percentile,0)/rn:0;
+  const rAvg=rn>0?rc.reduce((a,s)=>a+s.myPct,0)/rn:0;
+  const hlBonus=Math.min(10,Math.round((hl.perfect+hl.improved)/safe*15));
+  const achievement=sl.length>0?Math.min(100,Math.round(0.6*pAvg+0.4*rAvg+hlBonus)):0;
+  return{attitude,engage,autonomy,understand,achievement,N};
+}
+
+// ════════════════════════════════════════════
+//  미리보기 렌더
+// ════════════════════════════════════════════
+let DS=null;
+function regen(){DS=buildDataset();renderPreview();log('데이터 재생성 완료','ok');}
+function delta(a,b){const d=b-a;const cls=d>2?'up':d<-2?'down':'flat';const sign=d>0?'▲':d<0?'▼':'·';return`<span class="${cls}">${b} (${sign}${Math.abs(d)})</span>`;}
+function renderPreview(){
+  const AX=['attitude','engage','autonomy','understand','achievement'];
+  const LB=['학습태도','수업참여','자기주도','이해응용','성취성장'];
+  let h=`<table><tr><th rowspan="2">학생</th><th rowspan="2">기간</th>${LB.map(l=>`<th>${l}</th>`).join('')}<th rowspan="2">수업</th></tr><tr>${LB.map(()=>'<th style="font-weight:400;color:#64748B">3월→5월</th>').join('')}</tr>`;
+  PERSONAS.forEach(per=>{
+    const m1=axesForMonth(DS,per.nk,'2026-03');
+    const m3=axesForMonth(DS,per.nk,'2026-05');
+    h+=`<tr><td class="name">${per.name}<br><span class="persona-tag">${per.tag}</span></td><td>3월→5월</td>${AX.map(k=>`<td>${m1[k]}→${delta(m1[k],m3[k])}</td>`).join('')}<td>${m1.N}/${m3.N}회</td></tr>`;
+  });
+  h+='</table>';
+  document.getElementById('preview').innerHTML=h;
+}
+
+// ════════════════════════════════════════════
+//  Firebase 쓰기/삭제
+// ════════════════════════════════════════════
+function cfg(){
+  const url=document.getElementById('fbUrl').value.trim().replace(/\/$/,'');
+  const path=document.getElementById('fbPath').value.trim().replace(/^\/|\/$/g,'');
+  const auth=document.getElementById('fbAuth').value.trim();
+  return{url,path,q:auth?`?auth=${encodeURIComponent(auth)}`:''};
+}
+function ep(node){const c=cfg();return`${c.url}/${c.path}/${node}.json${c.q}`;}
+function log(msg,cls){const el=document.getElementById('log');const t=new Date().toLocaleTimeString();el.innerHTML+=`\n<span class="${cls||''}">[${t}] ${msg}</span>`;el.scrollTop=el.scrollHeight;}
+async function fbWrite(node,method,body){
+  const r=await fetch(ep(node),{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  if(!r.ok)throw new Error(`${method} ${node} → ${r.status} ${await r.text().catch(()=>'')}`);
+  return r;
+}
+function checkCfg(){const c=cfg();if(!c.url||!c.path){log('URL과 경로를 먼저 입력하세요.','err');return false;}return true;}
+
+async function applySeed(){
+  if(!checkCfg())return;
+  if(!DS)regen();
+  document.getElementById('log').innerHTML='시드 적용 시작…';
+  try{
+    log('classes PATCH (병합)…');
+    await fbWrite('classes','PATCH',DS.classes);
+    log('students PATCH (병합)…');
+    await fbWrite('students','PATCH',DS.students);
+    for(const per of PERSONAS){
+      log(`obs/${per.nk} PUT …`);
+      await fbWrite(`obs/${per.nk}`,'PUT',DS.obs[per.nk]);
+      log(`input/${per.nk} PUT …`);
+      await fbWrite(`input/${per.nk}`,'PUT',DS.input[per.nk]);
+    }
+    log(`scores/weekly/${CLASS_ID} PUT …`);
+    await fbWrite(`scores/weekly/${CLASS_ID}`,'PUT',DS.scores.weekly[CLASS_ID]);
+    log('✓ 시드 적용 완료! analyzer에서 반 ZZ_TEST_3M 선택 후 확인하세요.','ok');
+  }catch(e){log('✗ 실패: '+e.message,'err');log('규칙이 쓰기 거부면(401/403) DB 규칙을 열거나 인증 토큰을 입력하세요.','warn');}
+}
+
+async function deleteSeed(){
+  if(!checkCfg())return;
+  document.getElementById('log').innerHTML='시드 삭제 시작…';
+  try{
+    log(`classes/${CLASS_ID} DELETE …`);
+    await fbWrite(`classes/${CLASS_ID}`,'DELETE');
+    log(`scores/weekly/${CLASS_ID} DELETE …`);
+    await fbWrite(`scores/weekly/${CLASS_ID}`,'DELETE');
+    for(const per of PERSONAS){
+      log(`students/${per.nk} / obs / input DELETE …`);
+      await fbWrite(`students/${per.nk}`,'DELETE');
+      await fbWrite(`obs/${per.nk}`,'DELETE');
+      await fbWrite(`input/${per.nk}`,'DELETE');
+    }
+    log('✓ 시드 삭제 완료.','ok');
+  }catch(e){log('✗ 실패: '+e.message,'err');}
+}
+
+// init
+(function(){
+  try{
+    const u=localStorage.getItem('drw_fb_url')||localStorage.getItem('drw_db_url')||'';
+    const p=localStorage.getItem('drw_fb_path')||localStorage.getItem('drw_db_path')||'';
+    if(u)document.getElementById('fbUrl').value=u;
+    if(p)document.getElementById('fbPath').value=p;
+  }catch(e){}
+  regen();
+})();
+</script>
+</body>
+</html>

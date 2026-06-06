@@ -28,12 +28,18 @@ DailyReportWizard 2.0이 Firebase에 축적한 수업 관찰 데이터를 기반
 ```
 students/{nameKey}            학생 명단 {name, class}  (nameKey = 출결번호, unique)
 classes/{classId}             학급 {group, courses:{subject:{curriculum}}}
-input/{nameKey}/{subject}     과제수행도 + 특이사항 {assign, note}
-obs/{nameKey}/{subject}/{YYYY-MM-DD}  수업 관찰 태그 (날짜별 히스토리)
-  condition, understand, understand_sub[], engage[], caution[], extra[], highlight[]
+input/{nameKey}/__note__      당일 특이사항 (학생 단위 단일) {note}   ← v2.1.2: 과목 종속 아님
+obs/{nameKey}/{subject}/{YYYY-MM-DD}  관찰 태그 + 과제수행도 (날짜별 히스토리)
+  assign_grade, assign_tags[], condition, understand, understand_sub[], engage[], caution[], extra[], highlight[]
 scores/weekly/{classId}/{subject}/{testKey}   주간 시험 점수
 session/class_data/{classId|subject}          반 공통 진도/과제 {progress, homework}
+history/{nameKey}/{YYYY-MM-DD}  전송된 최종 데일리 코멘트 {note, instructor}  ← v2.1.2 신규 누적
 ```
+
+> **읽기 주의 (v2.1.2)**
+> - 특이사항(note)은 `input/{nameKey}/__note__/note` 에서 읽음 (구 과목별 `{subject}.note` 는 fallback).
+> - 과제수행도는 `obs/.../assign_grade` 가 단일 소스 (`input/.assign` 폐기).
+> - 과거 전송 코멘트 `history/{nameKey}/{date}` → AI 반복 회피·맥락 참고용.
 
 > v2.0 student-centric. nameKey 가 곧 학생 식별자(출결번호). 구 composite `{sheet}|{cls}|{name}` 키 폐기됨.
 

@@ -17,6 +17,7 @@
 | 1.2 | 2026-05-25 | scores/ 연동 구현: 성적 추이 섹션, 성취도 레이더 축, AI 프롬프트 성적 반영 |
 | 2.0 | 2026-05-27 | DB 구조 전면 재설계 반영. 학생 목록 로드 경로 변경. obs subject별 aggregation 추가. scores weekly/achievement 분리 |
 | 2.1 | 2026-05-28 | nameKey = 출결번호 (불변 고유번호). 이름 기반 키 폐기. 읽기 전용 도구이므로 코드 영향 없음 — 스키마 참조 업데이트만 |
+| 2.2 | 2026-05-30 | 역량 레이더 비포·애프터 오버레이 추가 (비교 기간 끔/직전 동기간/직접 지정 3모드, 변화량 병기). 축 계산 `computeWindowData`로 일원화 |
 
 ---
 
@@ -58,11 +59,14 @@ DRW2가 Firebase에 축적한 일별 관찰 데이터와 성적 데이터를 기
 |------|------|------|
 | 학생 목록 | `students/?orderBy="class"&equalTo="{classId}"` | 반별 학생 필터링 |
 | 반 정보 | `classes/{classId}/courses/` | 과목(subject) 목록, curriculum |
-| 수업 관찰 | `obs/{nameKey}/{subject}/{date}/` | 관찰 태그 (subject별 aggregation) |
-| 과제/메모 | `input/{nameKey}/{subject}/` | 과제 수행도, 특이사항 |
+| 수업 관찰 + 과제수행도 | `obs/{nameKey}/{subject}/{date}/` | 관찰 태그 + `assign_grade`(과제수행도 단일 소스) |
+| 특이사항(당일) | `input/{nameKey}/__note__/note` | **학생 단위 단일**(v2.1.2). 구 `{subject}.note` 는 fallback |
+| 전송 코멘트(누적) | `history/{nameKey}/{date}/` | 과거 전송 최종 코멘트 `{note,instructor}` — 반복 회피·맥락 (v2.1.2 신규) |
 | 반별 성적 | `scores/weekly/{classId}/{subject}/{testKey}/` | 주간 시험 성적 |
 | 학년단위 성적 | `scores/achievement/{curriculumKey}/{testKey}/` | 성취도평가 등 |
 | 진도/과제 | `session/class_data/` | 진도 정보 |
+
+> **v2.1.2 정합 주의**: 특이사항은 과목 종속이 아니라 **학생 단위 단일**(`__note__`). 과목별 루프로 `.note` 읽으면 빈값(회귀) — `__note__` 직접 읽기. 과제수행도는 `input/.assign`(폐기) 아닌 `obs/assign_grade`.
 
 ### 2.3 경로 변환 (구 → 신)
 
@@ -150,6 +154,20 @@ for (const subject of Object.keys(studentSubjects)) {
 | ③ 과제 성실도 | `input.assign` | 성실 계열 / 수업수 × 100 |
 | ④ 이해도 | `obs.understand` + `understand_sub` | top/good 비율 + 태그 가중 |
 | ⑤ 성취도 | `scores/weekly/` + `scores/achievement/` | 최근 시험 학급 내 백분율 |
+
+#### 4.3.1 비포·애프터 오버레이 (비교 기간)
+
+- 선택 기간(애프터)과 **비교 기간**(비포)의 5축을 한 차트에 겹쳐 표시.
+- **비교 기간 모드** (`compareMode`, UI: "레이더 비교 기간"):
+  - `off` — 비교 안 함 (단일 폴리곤)
+  - `auto` — **직전 동일 길이 기간** = `prevWindow(start,end)` (기본값)
+  - `custom` — 날짜 2개 직접 지정 (`compareRange`, `cmp-start`/`cmp-end`)
+  - 해석: `resolveCompareWindow()` → `{start,end,label}` 또는 `null`
+- 축 계산 로직은 `computeWindowData(mergedObs, r, winStart, winEnd)`로 일원화 → 두 기간에 동일 적용.
+- 비교 기간에 관찰/성적 데이터가 전혀 없으면 오버레이 생략(단일 폴리곤).
+- 시각: 현재=파란 실선, 비교=회색 점선. 각 축 라벨에 변화량(`▲`/`▼`) 병기. 차트 하단 범례에 기간 라벨 표기.
+- 검토 화면(`radarSVG`, 다크)·최종 리포트(`buildReportRadarSVG`, 라이트) 양쪽 적용.
+- 데이터: `aggregateStudentData`가 `radarAxesPrev`, `radarPrevLabel`, `radarPrevCount`, `radarRangeLabel` 추가 반환.
 
 ### 4.4 성적 추이 섹션 (v2.0 변경)
 
