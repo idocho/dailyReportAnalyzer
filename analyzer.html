@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  DailyReportAnalyzer v0.3.0
+  DailyReportAnalyzer v0.3.1
   Crafted by IDO(idocho@kakao.com) · Powered by Claude AI
   월간 학부모 리포트 생성기 — Firebase 읽기 전용
 -->
@@ -8,7 +8,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DailyReportAnalyzer v0.3.0</title>
+<title>DailyReportAnalyzer v0.3.1</title>
 <style>
 :root{
   --bg:#0F1117;--card:#1A1D2E;--card2:#222639;--border:#2E3347;
@@ -175,6 +175,10 @@ hr{border:none;border-top:1px solid var(--border);margin:10px 0;}
     <input id="sPth" type="text" placeholder="drw_xxxxxxxx">
   </div>
   <div class="settings-row">
+    <label>DB 시크릿 (선택)</label>
+    <input id="sSec" type="password" placeholder="보안 전환 후 입력">
+  </div>
+  <div class="settings-row">
     <label>Claude API Key</label>
     <input id="sKey" type="password" placeholder="sk-ant-...">
   </div>
@@ -300,7 +304,7 @@ hr{border:none;border-top:1px solid var(--border);margin:10px 0;}
 // ══════════════════════════════════════════════════
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
-let fbUrl='', fbPath='', claudeKey='';
+let fbUrl='', fbPath='', fbSecret='', claudeKey='';
 let classesData={};   // classes/{classId} → {group, courses}
 let allStudents={};   // students/{nameKey} → {name, class, ...}
 let allObs={};        // {nameKey: {subject: {date: {...}}}}
@@ -343,8 +347,17 @@ function tagArr(v){
 // ══════════════════════════════════════════════════
 //  FIREBASE
 // ══════════════════════════════════════════════════
-function fbE(n){return`${fbUrl.replace(/\/$/,'')}/${fbPath.replace(/^\/|\/$/g,'')}/${n}.json`;}
+// Security Rules 전환 대비(#15): fbSecret 설정 시 ?auth= 전달. 미설정이면 종전과 동일(no-op).
+function fbE(n){const u=`${fbUrl.replace(/\/$/,'')}/${fbPath.replace(/^\/|\/$/g,'')}/${n}.json`;return fbSecret?`${u}?auth=${encodeURIComponent(fbSecret)}`:u;}
 async function fbGet(n){const r=await fetch(fbE(n));if(!r.ok)throw new Error(n+':'+r.status);return r.json();}
+// 스키마 버전 게이트: Analyzer는 read-only라 경고만 (차단 없음)
+const SCHEMA_MAX=14; // DB_SCHEMA v1.4
+async function checkSchemaVersion(){
+  try{
+    const v=await fbGet('schema_version');
+    if(typeof v==='number'&&v>SCHEMA_MAX)toast(`⚠️ DB 스키마 v${v} > 지원 v${SCHEMA_MAX} — 리포트가 부정확할 수 있습니다. 최신 Analyzer 사용 권장`,6000);
+  }catch(e){}
+}
 
 // ══════════════════════════════════════════════════
 //  SETTINGS
@@ -352,18 +365,22 @@ async function fbGet(n){const r=await fetch(fbE(n));if(!r.ok)throw new Error(n+'
 function loadSettings(){
   fbUrl=LS('drw_fb_url')||'';
   fbPath=LS('drw_fb_path')||'';
+  fbSecret=LS('drw_fb_secret')||'';
   claudeKey=LS('drw_analyzer_claude_key')||'';
   if(fbUrl)document.getElementById('sUrl').value=fbUrl;
   if(fbPath)document.getElementById('sPth').value=fbPath;
+  if(fbSecret)document.getElementById('sSec').value=fbSecret;
   if(claudeKey)document.getElementById('sKey').value=claudeKey;
   updateConnBadge();
 }
 function saveSettings(){
   fbUrl=document.getElementById('sUrl').value.trim();
   fbPath=document.getElementById('sPth').value.trim();
+  fbSecret=document.getElementById('sSec').value.trim();
   claudeKey=document.getElementById('sKey').value.trim();
   SS('drw_fb_url',fbUrl);
   SS('drw_fb_path',fbPath);
+  SS('drw_fb_secret',fbSecret);
   SS('drw_analyzer_claude_key',claudeKey);
   updateConnBadge();
   toast('저장됨');
@@ -372,8 +389,10 @@ function saveSettings(){
 function loadFromDRW(){
   const u=LS('drw_db_url')||LS('drw_fb_url')||'';
   const p=LS('drw_db_path')||LS('drw_fb_path')||'';
+  const s=LS('drw_db_secret')||LS('drw_fb_secret')||'';
   if(u){document.getElementById('sUrl').value=u;}
   if(p){document.getElementById('sPth').value=p;}
+  if(s){document.getElementById('sSec').value=s;}
   toast(u?'DRW 설정 로드됨':'DRW 설정 없음');
 }
 function toggleSettings(){
@@ -403,6 +422,7 @@ function updateConnBadge(){
 //  STEP 1 — CLASS & PERIOD
 // ══════════════════════════════════════════════════
 async function loadClasses(){
+  checkSchemaVersion(); // 스키마 게이트(#15) — 비차단, 초과 시 경고 토스트
   const el=document.getElementById('classList');
   el.innerHTML='<div class="loading-msg">반 목록 로드 중...</div>';
   try{
