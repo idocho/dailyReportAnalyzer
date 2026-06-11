@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  DailyReportAnalyzer v0.1.0
+  DailyReportAnalyzer v0.3.0
   Crafted by IDO(idocho@kakao.com) · Powered by Claude AI
   월간 학부모 리포트 생성기 — Firebase 읽기 전용
 -->
@@ -8,7 +8,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DailyReportAnalyzer v0.2.0</title>
+<title>DailyReportAnalyzer v0.3.0</title>
 <style>
 :root{
   --bg:#0F1117;--card:#1A1D2E;--card2:#222639;--border:#2E3347;
@@ -217,7 +217,10 @@ hr{border:none;border-top:1px solid var(--border);margin:10px 0;}
       <div class="section-title">레이더 비교 기간 <span style="font-weight:400;color:var(--muted);font-size:12px">(비포·애프터 오버레이)</span></div>
       <div class="period-btns">
         <button class="period-btn" id="cmp-off" onclick="selectCompare('off')">끔</button>
-        <button class="period-btn active" id="cmp-auto" onclick="selectCompare('auto')">직전 동기간</button>
+        <button class="period-btn active" id="cmp-auto" onclick="selectCompare('auto')">지난달 (직전 동기간)</button>
+        <button class="period-btn" id="cmp-m3" onclick="selectCompare('m3')">3개월 전</button>
+        <button class="period-btn" id="cmp-m6" onclick="selectCompare('m6')">6개월 전</button>
+        <button class="period-btn" id="cmp-y1" onclick="selectCompare('y1')">작년 동월</button>
         <button class="period-btn" id="cmp-custom" onclick="selectCompare('custom')">직접 지정</button>
       </div>
       <div id="compareRange" style="display:none;margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap">
@@ -308,7 +311,7 @@ let studentReports=[];
 let currentStudentIdx=-1;
 let currentStep=1;
 let dateRange={start:'',end:'',label:'',year:0,month:0,months:[]};
-let compareMode='auto'; // 'off' | 'auto'(직전 동기간) | 'custom'(직접 지정)
+let compareMode='auto'; // 'off' | 'auto'(직전 동기간=지난달) | 'm3'(3개월 전) | 'm6'(6개월 전) | 'y1'(작년 동월) | 'custom'(직접 지정)
 let compareRange={start:'',end:'',label:''}; // compareMode==='custom'일 때 사용
 let selectedCls=new Set(); // classId strings
 let settingsOpen=false;
@@ -462,11 +465,15 @@ function applyCustomRange(){
 // ── 레이더 비교 기간 (비포·애프터) ──
 function selectCompare(mode){
   compareMode=mode;
-  ['off','auto','custom'].forEach(m=>document.getElementById('cmp-'+m)?.classList.toggle('active',m===mode));
+  ['off','auto','m3','m6','y1','custom'].forEach(m=>document.getElementById('cmp-'+m)?.classList.toggle('active',m===mode));
   const cr=document.getElementById('compareRange');
   if(cr)cr.style.display=mode==='custom'?'flex':'none';
   updateCompareLabel();
 }
+
+// 비교 모드별 라벨 (offset 모드 공용)
+const CMP_NAMES={auto:'직전 동기간',m3:'3개월 전',m6:'6개월 전',y1:'작년 동월'};
+const CMP_OFFSETS={m3:3,m6:6,y1:12};
 
 function applyCompareRange(){
   const s=document.getElementById('cmp-start')?.value;
@@ -479,9 +486,10 @@ function applyCompareRange(){
 function resolveCompareWindow(){
   if(compareMode==='off')return null;
   if(compareMode==='custom')return compareRange.start&&compareRange.end?{...compareRange}:null;
-  // auto: 직전 동기간
   if(!dateRange.start)return null;
-  return prevWindow(dateRange.start,dateRange.end);
+  if(compareMode==='auto')return prevWindow(dateRange.start,dateRange.end); // 직전 동기간(지난달)
+  const off=CMP_OFFSETS[compareMode];
+  return off?offsetWindow(dateRange.start,dateRange.end,off):null; // N개월 전 동일 기간
 }
 
 function updateCompareLabel(){
@@ -492,12 +500,13 @@ function updateCompareLabel(){
     el.textContent=compareRange.start?`비교 기간: ${compareRange.label}`:'비교 기간을 지정하세요';
     return;
   }
+  const name=CMP_NAMES[compareMode]||'비교 기간';
   const pw=resolveCompareWindow();
-  el.textContent=pw?`직전 동기간: ${pw.label}`:'직전 동기간 (현재 기간 선택 후 자동 계산)';
+  el.textContent=pw?`${name}: ${pw.label}`:`${name} (현재 기간 선택 후 자동 계산)`;
 }
 
 function selectPeriod(type){
-  document.querySelectorAll('.period-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.period-btn[id^="pb-"]').forEach(b=>b.classList.remove('active')); // cmp-* 비교 버튼 제외
   document.getElementById(`pb-${type}`).classList.add('active');
   const cr=document.getElementById('customRange');
   if(cr)cr.style.display=type==='custom'?'flex':'none';
@@ -585,7 +594,7 @@ async function startGeneration(){
     for(const classId of selectedCls){
       const cd=classesData[classId]||{};
       const courses=cd.courses||{};
-      const subjects=Object.keys(courses);
+      const subjects=Object.keys(courses); // 현재 반 과목(archived 포함) — obs 실존 과목과의 union은 3.5에서
       const classStudents=Object.entries(allStudents).filter(([,v])=>v.class===classId);
       for(const[nameKey,v] of classStudents){
         studentReports.push({
@@ -599,24 +608,29 @@ async function startGeneration(){
     const total=studentReports.length;
     if(total===0){toast('학생이 없습니다.');generating=false;updateGenBtn();return;}
 
-    // 3. Bulk fetch obs/input per nameKey + scores/weekly per classId
+    // 3. Bulk fetch obs/input per nameKey + scores/weekly 전체 (v0.3: 역수집 — classId 무관, ~220KB)
     setProgress(5,'학생 관찰·성적 데이터 로드 중...');
     const nameKeys=[...new Set(studentReports.map(r=>r.nameKey))];
-    const classIds=[...selectedCls];
-    const[obsRes,inputRes,scoresRes,historyRes]=await Promise.all([
+    const[obsRes,inputRes,weeklyAll,historyRes]=await Promise.all([
       Promise.all(nameKeys.map(nk=>fbGet(`obs/${nk}`).catch(()=>null))),
       Promise.all(nameKeys.map(nk=>fbGet(`input/${nk}`).catch(()=>null))),
-      Promise.all(classIds.map(cid=>fbGet(`scores/weekly/${cid}`).catch(()=>null))),
+      fbGet('scores/weekly').catch(()=>null),
       Promise.all(nameKeys.map(nk=>fbGet(`history/${nk}`).catch(()=>null))),
     ]);
     allObs={};
     nameKeys.forEach((nk,i)=>{if(obsRes[i])allObs[nk]=obsRes[i];});
     allInput={};
     nameKeys.forEach((nk,i)=>{if(inputRes[i])allInput[nk]=inputRes[i];});
-    allScores={weekly:{}};
-    classIds.forEach((cid,i)=>{if(scoresRes[i])allScores.weekly[cid]=scoresRes[i];});
+    allScores={weekly:weeklyAll||{}};
     allHistory={};  // {nameKey: {YYYY-MM-DD: {note, instructor}}} — 과거 전송 코멘트
     nameKeys.forEach((nk,i)=>{if(historyRes[i])allHistory[nk]=historyRes[i];});
+
+    // 3.5. nameKey-first 과목 발견 (v0.3): obs에 실존하는 과목 ∪ 현재 반 과목
+    //      반 이동·과목 삭제 후에도 과거 obs 데이터가 레이더/달력/태그 집계에 포함됨
+    for(const r of studentReports){
+      const obsSubs=Object.keys(allObs[r.nameKey]||{});
+      r.subjects=[...new Set([...r.subjects,...obsSubs])];
+    }
 
     // 4. Process each student
     for(let i=0;i<studentReports.length;i++){
@@ -703,6 +717,20 @@ function prevWindow(start,end){
   const prevStart=new Date(prevEnd.getTime()-(lenDays-1)*86400000);
   const fmt=d=>`${d.getFullYear()}-${padZ(d.getMonth()+1)}-${padZ(d.getDate())}`;
   return{start:fmt(prevStart),end:fmt(prevEnd),label:`${fmt(prevStart)} ~ ${fmt(prevEnd)}`};
+}
+
+// 기준 기간을 N개월 뒤로 평행이동 — 3개월 전/6개월 전/작년 동월(12) 비교용
+// 말일은 말일로 스냅(6/30→3/31), 그 외 초과일은 클램프(5/31→2/28)
+function offsetWindow(start,end,months){
+  const shift=ds=>{
+    const[y,m,d]=ds.split('-').map(Number);
+    let yi=y,mi=m-months;
+    while(mi<=0){mi+=12;yi--;}
+    const dd=d===daysInMonth(y,m)?daysInMonth(yi,mi):Math.min(d,daysInMonth(yi,mi));
+    return`${yi}-${padZ(mi)}-${padZ(dd)}`;
+  };
+  const s=shift(start),e=shift(end);
+  return{start:s,end:e,label:`${s} ~ ${e}`};
 }
 
 // 특정 기간 윈도우에 대한 태그 집계 + 레이더 축 계산
@@ -886,31 +914,34 @@ function aggregateStudentData(r){
 }
 
 // ══════════════════════════════════════════════════
-//  SCORES AGGREGATION (v2.0 — weekly/{classId}/{subject}/{testKey})
+//  SCORES AGGREGATION (v0.3 — weekly 전체 역수집)
+//  scores/weekly/{classId}/{subject}/{testKey} 전체를 순회하며
+//  students에 nameKey가 있는 시험을 classId 무관하게 수집 → 반 이동 후에도 추이 생존.
+//  백분위·평균 코호트는 해당 시험 노드의 students 맵 자체(응시 당시 학급)에서 산출.
 // ══════════════════════════════════════════════════
 function aggregateStudentScores(r,winStart=dateRange.start,winEnd=dateRange.end){
-  const{nameKey,classId,subjects}=r;
+  const{nameKey}=r;
   const result=[];
-  const weeklyForClass=allScores.weekly?.[classId]||{};
-  for(const subject of subjects){
-    const tests=weeklyForClass[subject]||{};
-    for(const[testKey,t] of Object.entries(tests)){
-      if(!t||!t.meta)continue;
-      const date=t.meta.date;
-      if(!date||date<winStart||date>winEnd)continue;
-      const allVals=Object.values(t.students||{}).filter(v=>v!==''&&v!==null&&!isNaN(v)).map(Number);
-      const myRaw=(t.students||{})[nameKey];
-      if(myRaw===undefined||myRaw===null||myRaw==='')continue;
-      const myScore=Number(myRaw);
-      const maxScore=t.meta.max_score||100;
-      const myPct=Math.round((myScore/maxScore)*100);
-      const classAvg=allVals.length>0?allVals.reduce((a,b)=>a+b,0)/allVals.length:null;
-      const avgPct=classAvg!==null?Math.round((classAvg/maxScore)*100):null;
-      const rank=allVals.filter(s=>s>myScore).length+1;
-      const classSize=allVals.length;
-      const percentile=classSize>1?Math.round(((classSize-rank)/(classSize-1))*100):100;
-      result.push({testKey,subject,type:t.meta.type||'',round:t.meta.round||'',date,
-        score:myScore,maxScore,myPct,avgPct,classSize,rank,percentile});
+  for(const[cid,bySubject] of Object.entries(allScores.weekly||{})){
+    for(const[subject,tests] of Object.entries(bySubject||{})){
+      for(const[testKey,t] of Object.entries(tests||{})){
+        if(!t||!t.meta)continue;
+        const myRaw=(t.students||{})[nameKey];
+        if(myRaw===undefined||myRaw===null||myRaw==='')continue;
+        const date=t.meta.date;
+        if(!date||date<winStart||date>winEnd)continue;
+        const allVals=Object.values(t.students||{}).filter(v=>v!==''&&v!==null&&!isNaN(v)).map(Number);
+        const myScore=Number(myRaw);
+        const maxScore=t.meta.max_score||100;
+        const myPct=Math.round((myScore/maxScore)*100);
+        const classAvg=allVals.length>0?allVals.reduce((a,b)=>a+b,0)/allVals.length:null;
+        const avgPct=classAvg!==null?Math.round((classAvg/maxScore)*100):null;
+        const rank=allVals.filter(s=>s>myScore).length+1;
+        const classSize=allVals.length;
+        const percentile=classSize>1?Math.round(((classSize-rank)/(classSize-1))*100):100;
+        result.push({testKey,classId:cid,subject,type:t.meta.type||'',round:t.meta.round||'',date,
+          score:myScore,maxScore,myPct,avgPct,classSize,rank,percentile});
+      }
     }
   }
   return result.sort((a,b)=>a.date.localeCompare(b.date));

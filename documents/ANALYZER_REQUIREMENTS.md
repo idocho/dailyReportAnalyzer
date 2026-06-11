@@ -1,7 +1,7 @@
 # DailyReportAnalyzer — 요구사항 명세서
 
 **Crafted by IDO(idocho@kakao.com) · Powered by Claude AI**  
-**문서 버전**: 2.1 · **앱 버전**: v0.2.0 · **최종 수정**: 2026-05-28
+**문서 버전**: 2.3 · **앱 버전**: v0.3.0 · **최종 수정**: 2026-06-11
 
 > Firebase 스키마: [ClassManager/documents/DB_SCHEMA.md](../../ClassManager/documents/DB_SCHEMA.md) 참조  
 > 이전 버전 이력: v1.2까지 동일 파일 내 기록
@@ -18,6 +18,7 @@
 | 2.0 | 2026-05-27 | DB 구조 전면 재설계 반영. 학생 목록 로드 경로 변경. obs subject별 aggregation 추가. scores weekly/achievement 분리 |
 | 2.1 | 2026-05-28 | nameKey = 출결번호 (불변 고유번호). 이름 기반 키 폐기. 읽기 전용 도구이므로 코드 영향 없음 — 스키마 참조 업데이트만 |
 | 2.2 | 2026-05-30 | 역량 레이더 비포·애프터 오버레이 추가 (비교 기간 끔/직전 동기간/직접 지정 3모드, 변화량 병기). 축 계산 `computeWindowData`로 일원화 |
+| 2.3 | 2026-06-11 | **v0.3 — nameKey-first 종단 비교**: ① 과목 순회를 nameKey-first로 전환 (obs 실존 과목 ∪ 현재 반 과목 union — 반 이동·과목 삭제 후에도 과거 데이터 포함), ② `scores/weekly` 전체 1회 GET 후 역수집 (classId 무관, students에 nameKey 있는 시험 전부 — 성적 추이가 반 이동 생존, 백분위 코호트는 시험 노드 내장 students 맵), ③ 레이더 비교 기간 선택 확장 (지난달·직전 동기간 기본 / 3개월 전 / 6개월 전 / 작년 동월 / 직접 지정 — `offsetWindow()` 말일 클램프), ④ 문서 정합: `scores/achievement`·`session/class_data`는 실제 코드 미사용임을 명시 |
 
 ---
 
@@ -53,18 +54,18 @@ DRW2가 Firebase에 축적한 일별 관찰 데이터와 성적 데이터를 기
 
 `analyzer.html`은 Firebase를 **읽기 전용**으로만 사용. 쓰기 없음.
 
-### 2.2 읽는 노드 및 경로 (v2.0 신규)
+### 2.2 읽는 노드 및 경로 (v0.3 현행)
 
 | 노드 | 경로 | 용도 |
 |------|------|------|
-| 학생 목록 | `students/?orderBy="class"&equalTo="{classId}"` | 반별 학생 필터링 |
-| 반 정보 | `classes/{classId}/courses/` | 과목(subject) 목록, curriculum |
-| 수업 관찰 + 과제수행도 | `obs/{nameKey}/{subject}/{date}/` | 관찰 태그 + `assign_grade`(과제수행도 단일 소스) |
+| 학생 목록 | `students/` (전체 GET 후 class 필터) | 반별 학생 필터링 |
+| 반 정보 | `classes/` (전체 GET) | 과목(subject) 목록, curriculum |
+| 수업 관찰 + 과제수행도 | `obs/{nameKey}/` (학생 전체 GET) | 관찰 태그 + `assign_grade`(과제수행도 단일 소스). **하위 과목 키 = 과목 발견 소스**(v0.3) |
 | 특이사항(당일) | `input/{nameKey}/__note__/note` | **학생 단위 단일**(v2.1.2). 구 `{subject}.note` 는 fallback |
 | 전송 코멘트(누적) | `history/{nameKey}/{date}/` | 과거 전송 최종 코멘트 `{note,instructor}` — 반복 회피·맥락 (v2.1.2 신규) |
-| 반별 성적 | `scores/weekly/{classId}/{subject}/{testKey}/` | 주간 시험 성적 |
-| 학년단위 성적 | `scores/achievement/{curriculumKey}/{testKey}/` | 성취도평가 등 |
-| 진도/과제 | `session/class_data/` | 진도 정보 |
+| 주간 성적 | `scores/weekly/` (**전체 1회 GET, v0.3**) | 모든 시험을 역수집 — students에 nameKey 있는 시험 전부 (classId 무관) |
+
+> **미사용 노드 (v0.3 정합)**: `scores/achievement/`(학년단위 성취도)·`session/class_data/`(진도/과제)는 현재 코드가 **읽지 않음**. 이전 문서의 "읽는 노드" 기재는 계획 단계 기술이었음. 성취도평가 연동은 향후 과제.
 
 > **v2.1.2 정합 주의**: 특이사항은 과목 종속이 아니라 **학생 단위 단일**(`__note__`). 과목별 루프로 `.note` 읽으면 빈값(회귀) — `__note__` 직접 읽기. 과제수행도는 `input/.assign`(폐기) 아닌 `obs/assign_grade`.
 
@@ -77,22 +78,22 @@ DRW2가 Firebase에 축적한 일별 관찰 데이터와 성적 데이터를 기
 | `input/{group}\|{classId}\|{name}\|{subject}` | `input/{nameKey}/{subject}/` |
 | `scores/{group}\|{classId}/{testKey}/` | `scores/weekly/{classId}/{subject}/{testKey}/` |
 
-### 2.4 obs subject별 Aggregation
+### 2.4 obs subject별 Aggregation — nameKey-first (v0.3)
 
-신규 구조에서 `obs`는 subject별로 분리 저장됨.  
-월간 리포트 생성 시 **해당 학생의 모든 subject obs를 날짜 기준으로 병합**:
+신규 구조에서 `obs`는 subject별로 분리 저장됨 (학생 grain — 반 삭제에도 생존).  
+**과목 발견은 nameKey-first**: 학생의 과목 목록 = `obs/{nameKey}` 하위에 실존하는 과목 키 ∪ 현재 반 course 키.
 
 ```js
-// 모든 subject obs 병합
-const allObs = {};
-for (const subject of Object.keys(studentSubjects)) {
-  const subjectObs = await fbGet(`obs/${nameKey}/${subject}`);
-  for (const [date, data] of Object.entries(subjectObs || {})) {
-    if (!allObs[date]) allObs[date] = [];
-    allObs[date].push({ subject, ...data });
-  }
-}
+// v0.3: obs 실존 과목 ∪ 현재 반 과목 (반 이동·과목 삭제 후 과거 데이터 포함)
+const obsSubs = Object.keys(allObs[nameKey] || {});
+r.subjects = [...new Set([...currentCourseKeys, ...obsSubs])];
 ```
+
+- 현재 반 course 목록만 순회하던 구버전은 학기 간 반/교재 변경 시 과거 obs가 누락됨 → v0.3에서 해소
+- `archived:true`(소프트 삭제) course 데이터도 포함
+- 과목 키: 신형 `"{curriculum} {textbook}"` + 레거시 교재명 단독 키 혼재 — 키 형식 무관하게 obs 실존 키 그대로 순회
+
+월간 리포트 생성 시 **해당 학생의 모든 subject obs를 날짜 기준으로 병합**.
 
 같은 날짜에 여러 subject 수업이 있는 경우:
 - `condition`: 가장 낮은 값 우선 (보수적 집계)
@@ -153,14 +154,15 @@ for (const subject of Object.keys(studentSubjects)) {
 | ② 참여도 | `obs.engage` (발표+질문) | 발생 횟수 / 수업수 × 100 |
 | ③ 과제 성실도 | `input.assign` | 성실 계열 / 수업수 × 100 |
 | ④ 이해도 | `obs.understand` + `understand_sub` | top/good 비율 + 태그 가중 |
-| ⑤ 성취도 | `scores/weekly/` + `scores/achievement/` | 최근 시험 학급 내 백분율 |
+| ⑤ 성취도 | `scores/weekly/` (역수집, v0.3) | 최근 시험 학급 내 백분율 — 코호트는 시험 노드 내장 students 맵 (`scores/achievement/` 미연동) |
 
 #### 4.3.1 비포·애프터 오버레이 (비교 기간)
 
 - 선택 기간(애프터)과 **비교 기간**(비포)의 5축을 한 차트에 겹쳐 표시.
-- **비교 기간 모드** (`compareMode`, UI: "레이더 비교 기간"):
+- **비교 기간 모드** (`compareMode`, UI: "레이더 비교 기간") — v0.3 확장:
   - `off` — 비교 안 함 (단일 폴리곤)
-  - `auto` — **직전 동일 길이 기간** = `prevWindow(start,end)` (기본값)
+  - `auto` — **지난달(직전 동일 길이 기간)** = `prevWindow(start,end)` (기본값 — 기존 동작 동일)
+  - `m3` / `m6` / `y1` — **3개월 전 / 6개월 전 / 작년 동월(12개월 전)** = `offsetWindow(start,end,N)` — 기준 기간을 N개월 평행이동, 말일 클램프(예: 5/31→2/28)
   - `custom` — 날짜 2개 직접 지정 (`compareRange`, `cmp-start`/`cmp-end`)
   - 해석: `resolveCompareWindow()` → `{start,end,label}` 또는 `null`
 - 축 계산 로직은 `computeWindowData(mergedObs, r, winStart, winEnd)`로 일원화 → 두 기간에 동일 적용.
@@ -169,10 +171,11 @@ for (const subject of Object.keys(studentSubjects)) {
 - 검토 화면(`radarSVG`, 다크)·최종 리포트(`buildReportRadarSVG`, 라이트) 양쪽 적용.
 - 데이터: `aggregateStudentData`가 `radarAxesPrev`, `radarPrevLabel`, `radarPrevCount`, `radarRangeLabel` 추가 반환.
 
-### 4.4 성적 추이 섹션 (v2.0 변경)
+### 4.4 성적 추이 섹션 (v0.3 변경)
 
-- **주간 시험**: `scores/weekly/{classId}/{subject}/` — subject별 그룹으로 표시
-- **학년단위 시험**: `scores/achievement/{curriculumKey}/` — 별도 섹션으로 표시
+- **주간 시험**: `scores/weekly/` 전체를 1회 GET 후 **역수집** — `students`에 해당 nameKey가 있는 시험을 classId 무관하게 수집 (반 개편 후 orphan classId의 과거 시험도 포함 → 추이 생존)
+- 학급 평균·등수·백분위 코호트 = 해당 시험 노드의 `students` 맵 (응시 당시 학급이 내장됨)
+- **학년단위 시험**(`scores/achievement/`): 미구현 — 향후 과제
 - 학급 평균 대비 표시 유지
 
 ---
