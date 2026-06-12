@@ -628,20 +628,22 @@ async function startGeneration(){
     const total=studentReports.length;
     if(total===0){toast('학생이 없습니다.');generating=false;updateGenBtn();return;}
 
-    // 3. Bulk fetch obs/input per nameKey + scores/weekly 전체 (v0.3: 역수집 — classId 무관, ~220KB)
+    // 3. Bulk fetch obs/input per nameKey + scores 전체 (v0.3: 역수집 — classId 무관)
+    //    v0.4: scores/achievement(학년단위)도 수집 — 성취도평가·반배치고사·실전모의고사 추이 반영
     setProgress(5,'학생 관찰·성적 데이터 로드 중...');
     const nameKeys=[...new Set(studentReports.map(r=>r.nameKey))];
-    const[obsRes,inputRes,weeklyAll,historyRes]=await Promise.all([
+    const[obsRes,inputRes,weeklyAll,achAll,historyRes]=await Promise.all([
       Promise.all(nameKeys.map(nk=>fbGet(`obs/${nk}`).catch(()=>null))),
       Promise.all(nameKeys.map(nk=>fbGet(`input/${nk}`).catch(()=>null))),
       fbGet('scores/weekly').catch(()=>null),
+      fbGet('scores/achievement').catch(()=>null),
       Promise.all(nameKeys.map(nk=>fbGet(`history/${nk}`).catch(()=>null))),
     ]);
     allObs={};
     nameKeys.forEach((nk,i)=>{if(obsRes[i])allObs[nk]=obsRes[i];});
     allInput={};
     nameKeys.forEach((nk,i)=>{if(inputRes[i])allInput[nk]=inputRes[i];});
-    allScores={weekly:weeklyAll||{}};
+    allScores={weekly:weeklyAll||{},achievement:achAll||{}};
     allHistory={};  // {nameKey: {YYYY-MM-DD: {note, instructor}}} — 과거 전송 코멘트
     nameKeys.forEach((nk,i)=>{if(historyRes[i])allHistory[nk]=historyRes[i];});
 
@@ -942,32 +944,37 @@ function aggregateStudentData(r){
 function aggregateStudentScores(r,winStart=dateRange.start,winEnd=dateRange.end){
   const{nameKey}=r;
   const result=[];
-  for(const[cid,bySubject] of Object.entries(allScores.weekly||{})){
-    for(const[subject,tests] of Object.entries(bySubject||{})){
-      for(const[testKey,t] of Object.entries(tests||{})){
-        if(!t)continue;
-        const meta=t.meta||t; // 구형 평면 레코드 폴백 (DRW 읽기 로직과 정합)
-        const myRaw=(t.students||{})[nameKey];
-        if(myRaw===undefined||myRaw===null||myRaw==='')continue;
-        const date=meta.date;
-        if(!date||date<winStart||date>winEnd)continue;
-        const allVals=Object.values(t.students||{}).filter(v=>v!==''&&v!==null&&!isNaN(v)).map(Number);
-        const myScore=Number(myRaw);
-        const maxScore=meta.max_score||100;
-        // 0~100 클램프 — 만점 초과/음수 구형 데이터가 막대·성취성장 축을 왜곡하지 않도록
-        const clampPct=v=>Math.max(0,Math.min(100,Math.round(v)));
-        const myPct=clampPct((myScore/maxScore)*100);
-        const classAvg=allVals.length>0?allVals.reduce((a,b)=>a+b,0)/allVals.length:null;
-        const avgPct=classAvg!==null?clampPct((classAvg/maxScore)*100):null;
-        const rank=allVals.filter(s=>s>myScore).length+1;
-        const classSize=allVals.length;
-        // 단독 응시(코호트 1명)는 비교 불능 → 중립 50 (100 부여 시 성취성장 축 부풀림)
-        const percentile=classSize>1?Math.round(((classSize-rank)/(classSize-1))*100):50;
-        result.push({testKey,classId:cid,subject,type:meta.type||'',round:meta.round||'',date,
-          score:myScore,maxScore,myPct,avgPct,classSize,rank,percentile});
-      }
-    }
-  }
+  // grade=true: 학년단위 시험(scores/achievement) — 코호트는 과정 수강생 전체(노드 내장 students 맵)
+  const collect=(t,testKey,cid,subject,grade)=>{
+    if(!t)return;
+    const meta=t.meta||t; // 구형 평면 레코드 폴백 (DRW 읽기 로직과 정합)
+    const myRaw=(t.students||{})[nameKey];
+    if(myRaw===undefined||myRaw===null||myRaw==='')return;
+    const date=meta.date;
+    if(!date||date<winStart||date>winEnd)return;
+    const allVals=Object.values(t.students||{}).filter(v=>v!==''&&v!==null&&!isNaN(v)).map(Number);
+    const myScore=Number(myRaw);
+    const maxScore=meta.max_score||100;
+    // 0~100 클램프 — 만점 초과/음수 구형 데이터가 막대·성취성장 축을 왜곡하지 않도록
+    const clampPct=v=>Math.max(0,Math.min(100,Math.round(v)));
+    const myPct=clampPct((myScore/maxScore)*100);
+    const classAvg=allVals.length>0?allVals.reduce((a,b)=>a+b,0)/allVals.length:null;
+    const avgPct=classAvg!==null?clampPct((classAvg/maxScore)*100):null;
+    const rank=allVals.filter(s=>s>myScore).length+1;
+    const classSize=allVals.length;
+    // 단독 응시(코호트 1명)는 비교 불능 → 중립 50 (100 부여 시 성취성장 축 부풀림)
+    const percentile=classSize>1?Math.round(((classSize-rank)/(classSize-1))*100):50;
+    result.push({testKey,classId:cid,subject,grade,type:meta.type||'',round:meta.round||'',date,
+      score:myScore,maxScore,myPct,avgPct,classSize,rank,percentile});
+  };
+  for(const[cid,bySubject] of Object.entries(allScores.weekly||{}))
+    for(const[subject,tests] of Object.entries(bySubject||{}))
+      for(const[testKey,t] of Object.entries(tests||{}))
+        collect(t,testKey,cid,subject,false);
+  // v0.4: 학년단위 — testKey에 날짜 없음(유형|회차), 날짜는 meta 대표값
+  for(const[ck,tests] of Object.entries(allScores.achievement||{}))
+    for(const[testKey,t] of Object.entries(tests||{}))
+      collect(t,testKey,'학년',ck,true);
   return result.sort((a,b)=>a.date.localeCompare(b.date));
 }
 
@@ -1041,7 +1048,7 @@ JSON 형식 엄수. 모든 문자열 값은 한국어. 배열·숫자 올바른 
   if(ca.late>0)cautionInfo.push(`지각 ${ca.late}회 (직접 언급 가능: "시간 엄수 습관")`);
   if(ca.sleepy>0||ca.chat>0||ca.attitude>0)cautionInfo.push(`집중도 저하 징후 ${ca.sleepy+ca.chat+ca.attitude}회 (완곡 표현만)`);
   const scoresInfo=d.scoresList.length
-    ?d.scoresList.map(s=>`${s.type}${s.round?` ${s.round}회`:''}(${s.date}): ${s.score}/${s.maxScore}점(${s.myPct}%)${s.avgPct!==null?` 학급평균${s.avgPct}% ${s.rank}등/${s.classSize}명`:''}`).join(' / ')
+    ?d.scoresList.map(s=>`${s.type}${s.round?` ${s.round}회`:''}(${s.date}): ${s.score}/${s.maxScore}점(${s.myPct}%)${s.avgPct!==null?` ${s.grade?'학년평균':'학급평균'}${s.avgPct}% ${s.rank}등/${s.classSize}명`:''}`).join(' / ')
     :'없음';
 
   const user=`[학생 정보]
@@ -1245,8 +1252,8 @@ function reviewScoreBarsHTML(list){
     <div style="height:100%;width:${s.myPct}%;background:var(--blue);opacity:.75;border-radius:4px;"></div>
     ${s.avgPct!==null?`<div style="position:absolute;top:0;bottom:0;left:${Math.min(s.avgPct,99)}%;width:2px;background:var(--amber);"></div>`:''}
   </div>
-  <div style="font-size:10px;color:var(--muted);margin-top:3px">${s.rank}등/${s.classSize}명 · ${s.score}/${s.maxScore}점${s.avgPct!==null?` · 학급평균 ${s.avgPct}%`:''}</div>
-</div>`).join('')+`<div style="font-size:10px;color:var(--muted2);margin-top:2px"><span style="color:var(--blue)">■</span> 내 점수 &nbsp;<span style="color:var(--amber)">|</span> 학급평균</div>`;
+  <div style="font-size:10px;color:var(--muted);margin-top:3px">${s.rank}등/${s.classSize}명 · ${s.score}/${s.maxScore}점${s.avgPct!==null?` · ${s.grade?'학년평균':'학급평균'} ${s.avgPct}%`:''}</div>
+</div>`).join('')+`<div style="font-size:10px;color:var(--muted2);margin-top:2px"><span style="color:var(--blue)">■</span> 내 점수 &nbsp;<span style="color:var(--amber)">|</span> 평균(학급/학년)</div>`;
 }
 
 function tagBarsHTML(engCounts, undSubCounts){
@@ -1796,9 +1803,9 @@ function buildReportScoreBars(scoresList){
     <span style="font-size:12px;font-weight:700;color:#3B82F6;width:34px;text-align:right;">${s.myPct}%</span>
   </div>
   <div style="font-size:11px;color:#94A3B8;margin-left:60px;">
-    ${s.rank}등/${s.classSize}명 · ${s.score}/${s.maxScore}점${s.avgPct!==null?` · 학급평균 ${s.avgPct}%`:''}
+    ${s.rank}등/${s.classSize}명 · ${s.score}/${s.maxScore}점${s.avgPct!==null?` · ${s.grade?'학년평균':'학급평균'} ${s.avgPct}%`:''}
   </div>
-</div>`).join('')+`<div style="font-size:10px;color:#CBD5E1;margin-top:4px;margin-left:60px;"><span style="color:#3B82F6">■</span> 내 점수 &nbsp;<span style="color:#F59E0B">|</span> 학급평균</div>`;
+</div>`).join('')+`<div style="font-size:10px;color:#CBD5E1;margin-top:4px;margin-left:60px;"><span style="color:#3B82F6">■</span> 내 점수 &nbsp;<span style="color:#F59E0B">|</span> 평균(학급/학년)</div>`;
 }
 
 // ══════════════════════════════════════════════════
