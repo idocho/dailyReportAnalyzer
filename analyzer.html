@@ -945,21 +945,25 @@ function aggregateStudentScores(r,winStart=dateRange.start,winEnd=dateRange.end)
   for(const[cid,bySubject] of Object.entries(allScores.weekly||{})){
     for(const[subject,tests] of Object.entries(bySubject||{})){
       for(const[testKey,t] of Object.entries(tests||{})){
-        if(!t||!t.meta)continue;
+        if(!t)continue;
+        const meta=t.meta||t; // 구형 평면 레코드 폴백 (DRW 읽기 로직과 정합)
         const myRaw=(t.students||{})[nameKey];
         if(myRaw===undefined||myRaw===null||myRaw==='')continue;
-        const date=t.meta.date;
+        const date=meta.date;
         if(!date||date<winStart||date>winEnd)continue;
         const allVals=Object.values(t.students||{}).filter(v=>v!==''&&v!==null&&!isNaN(v)).map(Number);
         const myScore=Number(myRaw);
-        const maxScore=t.meta.max_score||100;
-        const myPct=Math.round((myScore/maxScore)*100);
+        const maxScore=meta.max_score||100;
+        // 0~100 클램프 — 만점 초과/음수 구형 데이터가 막대·성취성장 축을 왜곡하지 않도록
+        const clampPct=v=>Math.max(0,Math.min(100,Math.round(v)));
+        const myPct=clampPct((myScore/maxScore)*100);
         const classAvg=allVals.length>0?allVals.reduce((a,b)=>a+b,0)/allVals.length:null;
-        const avgPct=classAvg!==null?Math.round((classAvg/maxScore)*100):null;
+        const avgPct=classAvg!==null?clampPct((classAvg/maxScore)*100):null;
         const rank=allVals.filter(s=>s>myScore).length+1;
         const classSize=allVals.length;
-        const percentile=classSize>1?Math.round(((classSize-rank)/(classSize-1))*100):100;
-        result.push({testKey,classId:cid,subject,type:t.meta.type||'',round:t.meta.round||'',date,
+        // 단독 응시(코호트 1명)는 비교 불능 → 중립 50 (100 부여 시 성취성장 축 부풀림)
+        const percentile=classSize>1?Math.round(((classSize-rank)/(classSize-1))*100):50;
+        result.push({testKey,classId:cid,subject,type:meta.type||'',round:meta.round||'',date,
           score:myScore,maxScore,myPct,avgPct,classSize,rank,percentile});
       }
     }

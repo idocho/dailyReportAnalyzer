@@ -1,7 +1,7 @@
 # DailyReportAnalyzer — 요구사항 명세서
 
 **Crafted by IDO(idocho@kakao.com) · Powered by Claude AI**  
-**문서 버전**: 2.4 · **앱 버전**: v0.3.1 · **최종 수정**: 2026-06-11
+**문서 버전**: 2.5 · **앱 버전**: v0.3.2 · **최종 수정**: 2026-06-12
 
 > Firebase 스키마: [ClassManager/documents/DB_SCHEMA.md](../../ClassManager/documents/DB_SCHEMA.md) 참조  
 > 이전 버전 이력: v1.2까지 동일 파일 내 기록
@@ -18,6 +18,7 @@
 | 2.0 | 2026-05-27 | DB 구조 전면 재설계 반영. 학생 목록 로드 경로 변경. obs subject별 aggregation 추가. scores weekly/achievement 분리 |
 | 2.1 | 2026-05-28 | nameKey = 출결번호 (불변 고유번호). 이름 기반 키 폐기. 읽기 전용 도구이므로 코드 영향 없음 — 스키마 참조 업데이트만 |
 | 2.2 | 2026-05-30 | 역량 레이더 비포·애프터 오버레이 추가 (비교 기간 끔/직전 동기간/직접 지정 3모드, 변화량 병기). 축 계산 `computeWindowData`로 일원화 |
+| 2.5 | 2026-06-12 | **v0.3.2 — 성적 집계 견고화** (`aggregateStudentScores`): ① 구형 평면 레코드 폴백 — `meta` 서브키 없으면 루트 필드 사용(DRW 읽기 로직과 정합, 종전엔 무음 스킵돼 성적 추이 누락) ② `myPct`/`avgPct` 0~100 클램프 — 만점 초과·음수 데이터가 막대 오버플로·성취성장 축 왜곡하지 않도록 ③ 단독 응시(코호트 1명) 백분위 100→**50 중립** (성취성장 축 부풀림 방지) |
 | 2.4 | 2026-06-11 | **v0.3.1 — Security Rules 전환 사전 배선(#15)**: ① `fbE()` DB Secret(`?auth=`) 옵션 부가 — 설정 패널 「DB 시크릿」 입력란(`drw_fb_secret` localStorage), 「DRW 설정 가져오기」가 시크릿(`drw_db_secret`)도 복사. 미설정 시 종전과 동일(no-op). ② `schema_version` 게이트 — `loadClasses()` 진입 시 DB 노드 확인, 클라 `SCHEMA_MAX`(14) 초과면 **경고 토스트만**(read-only라 차단 없음). 노드 부재·읽기 실패=통과. 전환 절차: DRW `documents/SECURITY_RULES_PLAN.md` |
 | 2.3 | 2026-06-11 | **v0.3 — nameKey-first 종단 비교**: ① 과목 순회를 nameKey-first로 전환 (obs 실존 과목 ∪ 현재 반 과목 union — 반 이동·과목 삭제 후에도 과거 데이터 포함), ② `scores/weekly` 전체 1회 GET 후 역수집 (classId 무관, students에 nameKey 있는 시험 전부 — 성적 추이가 반 이동 생존, 백분위 코호트는 시험 노드 내장 students 맵), ③ 레이더 비교 기간 선택 확장 (지난달·직전 동기간 기본 / 3개월 전 / 6개월 전 / 작년 동월 / 직접 지정 — `offsetWindow()` 말일 클램프), ④ 문서 정합: `scores/achievement`·`session/class_data`는 실제 코드 미사용임을 명시 |
 
