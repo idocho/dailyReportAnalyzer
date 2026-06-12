@@ -762,13 +762,16 @@ function computeWindowData(mergedObs,r,winStart,winEnd){
     .sort(([a],[b])=>a.localeCompare(b));
   const N=sessions.length;
 
+  // v0.5 태그 재구조화 — 신설 키(deep_try·slow·calc_miss·process_good) 추가,
+  // 폐기 키(present·help·preview·error_fix·confused·attitude·weekly_test·retest·perfect·improved)는
+  // 과거 데이터 호환을 위해 카운터에 유지(축 식에서는 미사용 또는 축소 반영)
   const cond={great:0,good:0,normal:0,low:0,bad:0};
   const und={top:0,good:0,normal_u:0,confused:0,hard:0};
   const undSub={self_solve:0,retry:0,confused:0};
-  const eng={present:0,question:0,help:0,preview:0,error_fix:0};
-  const caut={sleepy:0,chat:0,attitude:0,late:0};
+  const eng={present:0,question:0,help:0,preview:0,error_fix:0,deep_try:0};
+  const caut={sleepy:0,chat:0,attitude:0,late:0,slow:0,calc_miss:0};
   const extra={self_study:0,weekly_test:0,retest:0};
-  const hl={perfect:0,improved:0,mastered:0,effort:0};
+  const hl={perfect:0,improved:0,mastered:0,effort:0,process_good:0};
   const calData={};
 
   for(const[date,d] of sessions){
@@ -788,31 +791,35 @@ function computeWindowData(mergedObs,r,winStart,winEnd){
   const condScore={great:95,good:80,normal:65,low:45,bad:25};
   const condRecorded=Object.values(cond).reduce((a,b)=>a+b,0)||safe;
   const condAvg=['great','good','normal','low','bad'].reduce((s,k)=>s+condScore[k]*(cond[k]||0),0)/condRecorded;
+  // slow·calc_miss는 관찰용 — 패널티 미반영(점수화 시 입력 기피 유발). attitude는 legacy만
   const cautPenalty=(caut.late*8+caut.sleepy*5+caut.chat*6+caut.attitude*10)/safe;
   const attitude=Math.max(20,Math.min(100,Math.round(condAvg-cautPenalty)));
-  // ② 수업참여: 발표/질문/도움 (예습·오류정정 → 자기주도성 분리)
-  const engRate=(eng.present*14+eng.question*10+eng.help*6)/safe;
+  // ② 수업참여 (v0.5): 질문·심화도전·혼자해결 중심 — 실사용 0~7건이던 발표/도움 중심 식 폐기.
+  //    legacy present·help는 소가중으로 잔존 반영(과거 기간 비교 연속성)
+  const engRate=(eng.question*12+eng.deep_try*10+undSub.self_solve*6+eng.present*8+eng.help*5)/safe;
   const engage=35+Math.min(50,Math.round(engRate*8));
-  // ③ 자기주도성: 과제 기반(최대70) + 예습·자율학습·오류정정·재풀이 보조(최대30)
+  // ③ 자기주도성: 과제 기반(최대70) + 자율학습·재풀이·심화도전 보조(최대30)
+  //    (preview·error_fix 폐기 — legacy는 소가중 잔존)
   const hwGrade={done:100,most:80,half:50,little:25,none:0};
   const hwScores=sessions.map(([,d])=>hwGrade[d.assign_grade]).filter(v=>v!==undefined);
   const hwAvg=hwScores.length?hwScores.reduce((a,b)=>a+b,0)/hwScores.length:50;
   const hwBase=Math.round(hwAvg*0.7);
-  const autoBehavior=Math.min(30,Math.round(eng.preview/safe*18+extra.self_study/safe*15+eng.error_fix/safe*12+undSub.retry/safe*10));
+  const autoBehavior=Math.min(30,Math.round(extra.self_study/safe*15+undSub.retry/safe*12+eng.deep_try/safe*8+eng.preview/safe*8+eng.error_fix/safe*6));
   const autonomy=Math.min(100,hwBase+autoBehavior);
-  // ④ 이해응용: 이해도 가중평균 + 보조 행동 보너스(최대+15)
+  // ④ 이해응용: 이해도 가중평균 + 보조 행동 보너스(최대+15, v0.5: 풀이과정 우수 추가)
   const undScore={top:95,good:80,normal_u:65,confused:45,hard:28};
   const undRecorded=['top','good','normal_u','confused','hard'].reduce((s,k)=>s+(und[k]||0),0);
   const undAvg=undRecorded>0?['top','good','normal_u','confused','hard'].reduce((s,k)=>s+undScore[k]*(und[k]||0),0)/undRecorded:65;
-  const undBonus=Math.min(15,Math.round(undSub.self_solve/safe*10+undSub.retry/safe*7+hl.mastered/safe*8));
+  const undBonus=Math.min(15,Math.round(undSub.self_solve/safe*10+undSub.retry/safe*7+hl.mastered/safe*8+hl.process_good/safe*6));
   const understand=Math.min(100,Math.round(undAvg+undBonus));
   const scoresList=aggregateStudentScores(r,winStart,winEnd);
   // ⑤ 성취성장: 백분위60% + 원점수비율40% + 하이라이트 보너스(최대+10)
+  //    (v0.5: perfect·improved 폐기 → mastered·effort 기반, legacy도 합산)
   const recentN=Math.min(3,scoresList.length);
   const recent=scoresList.slice(-recentN);
   const percentileAvg=recentN>0?recent.reduce((a,s)=>a+s.percentile,0)/recentN:0;
   const rawPctAvg=recentN>0?recent.reduce((a,s)=>a+s.myPct,0)/recentN:0;
-  const hlBonus=Math.min(10,Math.round((hl.perfect+hl.improved)/safe*15));
+  const hlBonus=Math.min(10,Math.round((hl.mastered+hl.effort+hl.perfect+hl.improved)/safe*12));
   const achievement=scoresList.length>0?Math.min(100,Math.round(0.6*percentileAvg+0.4*rawPctAvg+hlBonus)):0;
 
   return{
@@ -1060,21 +1067,21 @@ JSON 형식 엄수. 모든 문자열 값은 한국어. 배열·숫자 올바른 
 [수업 컨디션 ${N}회 중]
 번뜩임(최상): ${c.great}회 / 잘함: ${c.good}회 / 보통: ${c.normal}회 / 낮음: ${c.low}회 / 힘듦: ${c.bad}회
 
-[수업참여]
-발표: ${e.present}회 / 질문: ${e.question}회 / 도움: ${e.help}회
+[수업참여·풀이]
+질문: ${e.question}회 / 심화·복합유형 도전: ${e.deep_try}회 / 혼자해결: ${us.self_solve}회${e.present||e.help?` / (구)발표 ${e.present}회·도움 ${e.help}회`:''}
 
 [자기주도성]
-예습: ${e.preview}회 / 오류정정: ${e.error_fix}회 / 자율학습: ${ex.self_study}회 / 오답재풀이: ${us.retry}회
+자율학습: ${ex.self_study}회 / 오답재풀이: ${us.retry}회${e.preview||e.error_fix?` / (구)예습 ${e.preview}회·오류정정 ${e.error_fix}회`:''}
 과제(${d.hwCounts.recorded}회 기록): 완료 ${d.hwCounts.done}회 / 대부분 ${d.hwCounts.most}회 / 절반 ${d.hwCounts.half}회 / 일부 ${d.hwCounts.little}회 / 미완 ${d.hwCounts.none}회${d.hwCounts.recorded?` · 평균 ${d.hwAvg}점`:''}
 
 [이해응용]
 완벽: ${u.top}회 / 잘함: ${u.good}회 / 이해함: ${u.normal_u}회 / 헷갈림: ${u.confused}회 / 어려워함: ${u.hard}회
-혼자해결: ${us.self_solve}회 / 개념혼동: ${us.confused}회 / 개념완전습득: ${hl.mastered}회
+혼자해결: ${us.self_solve}회 / 개념완전습득: ${hl.mastered}회 / 풀이과정 우수: ${hl.process_good}회
 
 [특이 사항]
-하이라이트: 만점·완벽 ${hl.perfect}회 / 큰향상 ${hl.improved}회 / 끝까지도전 ${hl.effort}회
+하이라이트: 개념완전습득 ${hl.mastered}회 / 끝까지도전 ${hl.effort}회 / 풀이과정 우수 ${hl.process_good}회${hl.perfect||hl.improved?` / (구)만점·완벽 ${hl.perfect}회·큰향상 ${hl.improved}회`:''}
 주의 패턴: ${cautionInfo.length?cautionInfo.join(' / '):'없음'}
-기타: 주간Test ${ex.weekly_test}회 / 재시험 ${ex.retest}회
+관찰 메모성 패턴(점수 미반영): 풀이 느림 ${ca.slow||0}회 / 계산실수 ${ca.calc_miss||0}회
 
 [성적 (이 기간)]
 ${scoresInfo}
@@ -1256,14 +1263,15 @@ function reviewScoreBarsHTML(list){
 </div>`).join('')+`<div style="font-size:10px;color:var(--muted2);margin-top:2px"><span style="color:var(--blue)">■</span> 내 점수 &nbsp;<span style="color:var(--amber)">|</span> 평균(학급/학년)</div>`;
 }
 
-function tagBarsHTML(engCounts, undSubCounts){
+function tagBarsHTML(engCounts, undSubCounts, extraCounts={}, hlCounts={}){
+  // v0.5 재구조화 — 실사용 상위 + 신설 태그. 폐기 태그(발표·예습·오류정정)는 미표시
   const items=[
-    {key:'present',src:engCounts,label:'📣 발표',color:'#3B82F6'},
     {key:'question',src:engCounts,label:'🙋 질문',color:'#22C55E'},
+    {key:'deep_try',src:engCounts,label:'🧗 심화도전',color:'#3B82F6'},
     {key:'self_solve',src:undSubCounts,label:'💪 혼자해결',color:'#8B5CF6'},
     {key:'retry',src:undSubCounts,label:'🔁 오답재풀이',color:'#F59E0B'},
-    {key:'error_fix',src:engCounts,label:'💡 오류정정',color:'#14B8A6'},
-    {key:'preview',src:engCounts,label:'📖 예습',color:'#EC4899'},
+    {key:'self_study',src:extraCounts,label:'📚 자율학습',color:'#14B8A6'},
+    {key:'process_good',src:hlCounts,label:'📝 풀이과정 우수',color:'#EC4899'},
   ];
   const max=Math.max(1,...items.map(t=>(t.src[t.key]||0)));
   return items.map(t=>{
@@ -1386,7 +1394,7 @@ ${showCal?`<div class="review-section">
 
 ${showTags?`<div class="review-section">
   <div class="review-section-label">관찰 태그 집계 <span style="color:var(--muted2);font-weight:400">(자동 집계)</span></div>
-  <div class="review-readonly">${tagBarsHTML(d.engageCounts,d.understandSubCounts)}</div>
+  <div class="review-readonly">${tagBarsHTML(d.engageCounts,d.understandSubCounts,d.extraCounts,d.highlightCounts)}</div>
 </div>`:''}
 
 ${showScores?`<div class="review-section">
@@ -1553,7 +1561,7 @@ function generateReportHTML(r){
   // Calendar for report
   const calSections=dateRange.months.map(({y,m})=>buildReportCalendar(d.calendarData,y,m)).join('');
   // Tag bars for report
-  const tagBars=buildReportTagBars(d.engageCounts,d.understandSubCounts,d.sessionCount);
+  const tagBars=buildReportTagBars(d.engageCounts,d.understandSubCounts,d.sessionCount,d.extraCounts,d.highlightCounts);
   // Scores
   const showScores=document.getElementById('sec-scores')?.checked!==false;
   const scoreBars=showScores&&d.scoresList.length?buildReportScoreBars(d.scoresList):'';
@@ -1765,13 +1773,14 @@ function buildReportCalendar(calData,year,month){
   return h;
 }
 
-function buildReportTagBars(engCounts,undSubCounts,sessionCount){
+function buildReportTagBars(engCounts,undSubCounts,sessionCount,extraCounts={},hlCounts={}){
   const items=[
-    {key:'present',src:engCounts,label:'📣 발표',color:'#3B82F6'},
     {key:'question',src:engCounts,label:'🙋 질문',color:'#22C55E'},
+    {key:'deep_try',src:engCounts,label:'🧗 심화도전',color:'#3B82F6'},
     {key:'self_solve',src:undSubCounts,label:'💪 혼자해결',color:'#8B5CF6'},
     {key:'retry',src:undSubCounts,label:'🔁 오답재풀이',color:'#F59E0B'},
-    {key:'error_fix',src:engCounts,label:'💡 오류정정',color:'#14B8A6'},
+    {key:'self_study',src:extraCounts,label:'📚 자율학습',color:'#14B8A6'},
+    {key:'process_good',src:hlCounts,label:'📝 풀이과정 우수',color:'#EC4899'},
   ];
   const filtered=items.filter(t=>(t.src[t.key]||0)>0);
   if(filtered.length===0)return'';

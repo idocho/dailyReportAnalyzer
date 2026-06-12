@@ -1,7 +1,7 @@
 # DailyReportAnalyzer — 요구사항 명세서
 
 **Crafted by IDO(idocho@kakao.com) · Powered by Claude AI**  
-**문서 버전**: 2.6 · **앱 버전**: v0.4 · **최종 수정**: 2026-06-12
+**문서 버전**: 2.7 · **앱 버전**: v0.5 · **최종 수정**: 2026-06-12
 
 > Firebase 스키마: [ClassManager/documents/DB_SCHEMA.md](../../ClassManager/documents/DB_SCHEMA.md) 참조  
 > 이전 버전 이력: v1.2까지 동일 파일 내 기록
@@ -18,6 +18,7 @@
 | 2.0 | 2026-05-27 | DB 구조 전면 재설계 반영. 학생 목록 로드 경로 변경. obs subject별 aggregation 추가. scores weekly/achievement 분리 |
 | 2.1 | 2026-05-28 | nameKey = 출결번호 (불변 고유번호). 이름 기반 키 폐기. 읽기 전용 도구이므로 코드 영향 없음 — 스키마 참조 업데이트만 |
 | 2.2 | 2026-05-30 | 역량 레이더 비포·애프터 오버레이 추가 (비교 기간 끔/직전 동기간/직접 지정 3모드, 변화량 병기). 축 계산 `computeWindowData`로 일원화 |
+| 2.7 | 2026-06-12 | **v0.5(브랜치) — obs 태그 재구조화 대응** ① 카운터에 신설 키(deep_try·slow·calc_miss·process_good) 추가, 폐기 키는 과거 데이터 호환 유지 ② 축 개정 — 수업참여: `question×12+deep_try×10+self_solve×6`(+legacy present×8·help×5 잔존), 자기주도 보조: `self_study×15+retry×12+deep_try×8`(+legacy preview·error_fix 소가중), 이해응용 보너스 +process_good×6, 성취 하이라이트 보너스 `mastered+effort`(+legacy perfect·improved) ③ slow·calc_miss는 **패널티 미반영**(관찰 메모성 — AI 프롬프트에만 별도 줄) ④ 태그 막대(리뷰·리포트) 6종 교체: 질문·심화도전·혼자해결·오답재풀이·자율학습·풀이과정우수 ⑤ AI 프롬프트 통계 블록 개편(구 태그는 잔존 시에만 "(구)" 표기) |
 | 2.6 | 2026-06-12 | **v0.4 — 학년단위 시험(`scores/achievement/`) 연동**: bulk fetch에 achievement 전체 추가, `aggregateStudentScores`를 weekly·achievement 공용 수집기로 리팩터(`collect()` — grade 플래그). 학년 시험 코호트 = 노드 내장 students 맵(과정 수강생 전체) — 백분위·등수·평균이 학년 기준. testKey 날짜 없음(`유형\|회차`, DRW v8.23) — 날짜는 meta 대표값 사용. 표시: classId 「학년」, subject=curriculumKey, 라벨 「학년평균」(리뷰·리포트·AI 프롬프트), 범례 「평균(학급/학년)」. 스텁 검증: 학년 5명 코호트 3등→백분위 50, 구형 평면 폴백 동작 |
 | 2.5 | 2026-06-12 | **v0.3.2 — 성적 집계 견고화** (`aggregateStudentScores`): ① 구형 평면 레코드 폴백 — `meta` 서브키 없으면 루트 필드 사용(DRW 읽기 로직과 정합, 종전엔 무음 스킵돼 성적 추이 누락) ② `myPct`/`avgPct` 0~100 클램프 — 만점 초과·음수 데이터가 막대 오버플로·성취성장 축 왜곡하지 않도록 ③ 단독 응시(코호트 1명) 백분위 100→**50 중립** (성취성장 축 부풀림 방지) |
 | 2.4 | 2026-06-11 | **v0.3.1 — Security Rules 전환 사전 배선(#15)**: ① `fbE()` DB Secret(`?auth=`) 옵션 부가 — 설정 패널 「DB 시크릿」 입력란(`drw_fb_secret` localStorage), 「DRW 설정 가져오기」가 시크릿(`drw_db_secret`)도 복사. 미설정 시 종전과 동일(no-op). ② `schema_version` 게이트 — `loadClasses()` 진입 시 DB 노드 확인, 클라 `SCHEMA_MAX`(14) 초과면 **경고 토스트만**(read-only라 차단 없음). 노드 부재·읽기 실패=통과. 전환 절차: DRW `documents/SECURITY_RULES_PLAN.md` |
