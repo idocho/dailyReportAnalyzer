@@ -1,7 +1,7 @@
 # DailyReportAnalyzer — 요구사항 명세서
 
 **Crafted by IDO(idocho@kakao.com) · Powered by Claude AI**  
-**문서 버전**: 2.6 · **앱 버전**: v0.4 · **최종 수정**: 2026-06-12
+**문서 버전**: 2.9 · **앱 버전**: v0.4 · **최종 수정**: 2026-06-14
 
 > Firebase 스키마: [ClassManager/documents/DB_SCHEMA.md](../../ClassManager/documents/DB_SCHEMA.md) 참조  
 > 이전 버전 이력: v1.2까지 동일 파일 내 기록
@@ -12,6 +12,9 @@
 
 | 버전 | 날짜 | 내용 |
 |------|------|------|
+| 2.9 | 2026-06-14 | **자기주도 다과목 병합 보정 (§4.5)** — 실데이터(조이도 22명) 레이더 검증 중 발견: 과제수행도를 같은 날 과목 중 최악값 병합 → 다과목 학생이 한 교재만 빠뜨려도 autonomy 0 추락(이승진 4과목, 실제 most·half 수행했으나 3점). 병합 시 과목별 등급 모음(`__hwAll`) 누적 후 **전 과목-세션 평균**으로 autonomy 계산(3→20). 표시·AI노트용 `assign_grade`(최악값)은 유지. condition·understand 병합은 별건으로 잔존 |
+| 2.8 | 2026-06-14 | **스탯 Formula 개정 + "그럴듯" 균형 보정 (§4.5)** — 감사 결함 수정. 신태그 카운터 추가 후: ② 참여도 `+deep_try*12` + **결측=중립50 baseline**(희소 positive-only 축 dent 해소, `50+min(50,engRate*5)`), ④ 이해응용 `+process_good*8`·`writeup_weak` 약한 감점(cap8), ⑤ 성취 죽은 perfect/improved→`effort`·성적결측 50중립, ① 학습태도 condition결측 65중립, ③ 자기주도 과제가중 **0.7→0.85**(폐기태그 의존 천장70 해소). slow·calc_miss 관찰용 무패널티. 표시·AI프롬프트·빈도차트 신태그 반영. 전형 학생 5종 5축 시뮬 편차 11~18 균형 검증·JS문법 OK. 미반영: 가중치 config화 |
+| 2.7 | 2026-06-14 | **스탯 Formula 감사 박제 (§4.5 신설, 수정 대기)** — `computeWindowData` 레이더 5축·성적 집계 전반 점검. 🔴 v8.30 폐기 6태그(present·help·preview·error_fix·perfect·improved)가 공식 입력으로 잔존해 참여도·자기주도·성취 보너스 무력화 + 신태그(deep_try·process_good·slow·calc_miss·writeup_weak) 미배선(analyzer.html 0회) — 태그 3중 정의 동기화 부채. 🟠 결측 폴백 비대칭(attitude 20·achievement 0 추락 vs 이해도 65 중립). 🟡 참여도 천장 85·매직넘버 산재·다과목 보수병합. ✅ 백분위 중립·클램프·날짜정렬·동점rank 정상. **코드 미반영** — 가중치 합의 후 수정 |
 | 1.0 | 2026-05-21 | 최초 작성 |
 | 1.1 | 2026-05-23 | Firebase obs 노드 구조 DRW_REQUIREMENTS와 통일. 데이터 소스 키 정합성 수정. AI 모델 현행화 |
 | 1.2 | 2026-05-25 | scores/ 연동 구현: 성적 추이 섹션, 성취도 레이더 축, AI 프롬프트 성적 반영 |
@@ -180,6 +183,64 @@ r.subjects = [...new Set([...currentCourseKeys, ...obsSubs])];
 - 학급 평균·등수·백분위 코호트 = 해당 시험 노드의 `students` 맵 (응시 당시 학급이 내장됨)
 - **학년단위 시험**(`scores/achievement/`): 미구현 — 향후 과제
 - 학급 평균 대비 표시 유지
+
+---
+
+## 4.5 스탯 Formula 감사 + 개정 (2026-06-14 · **반영 완료** v2.8)
+
+`computeWindowData`(analyzer.html) 레이더 5축·성적 집계 전반 점검 결과와 개정 내역. 아래 🔴🟠 결함은 **2026-06-14 수정 반영됨**(개정 매핑은 맨 아래 표). 🟡 일부(매직넘버 config화)는 후속 과제로 잔존.
+
+### 🔴 Critical — v8.30 태그 개편이 공식 3축을 무력화
+
+DRW v8.30에서 폐기된 6태그(`present`·`help`·`preview`·`error_fix`·`perfect`·`improved`)가 **여전히 스탯 공식 입력**인데 웹 입력에서 제거돼 신규 데이터에선 항상 0. 대체 신태그(`deep_try`·`process_good`)는 **미배선**. 집계 루프(`analyzer.html:774-783`)가 `if(obj[k]!==undefined)` 가드라 미지 키는 무음 누락.
+
+| 축 | 공식 | line | 결함 |
+|----|------|------|------|
+| ② 참여도 | `present*14+question*10+help*6` | 794 | present·help 사장 → 사실상 question만. `deep_try` 0 기여 |
+| ③ 자기주도 | `preview*18+self_study*15+error_fix*12+retry*10` | 801 | preview·error_fix 사장 → 보너스 반감 |
+| ⑤ 성취성장 | `(perfect+improved)*15` | 815 | 둘 다 사장 → hlBonus≈0. `process_good` 미반영 |
+
+신태그 5종(`deep_try`·`process_good`·`slow`·`calc_miss`·`writeup_weak`) analyzer.html 0회 출현 — 카운터(767-771)·표시(1064-1077)·빈도차트(1261-1266/1770-1774) 전부 구 택소노미. **태그 정의 3중화(웹 `app-core.js`·PC `constants.py`·Analyzer)** 동기화 부채.
+
+### 🟠 Correctness — 결측 폴백 비대칭
+
+| 축 | 결함 | line |
+|----|------|------|
+| ① 학습태도 | condition 0건이면 condAvg=0 → **attitude 20 추락** (이해도는 65 중립 폴백인데 비대칭) | 789-792 |
+| ⑤ 성취성장 | 성적 0건이면 **achievement=0** (결측을 "최악"으로 오독) | 816 |
+
+→ 결측은 "데이터 없음"(중립 또는 축 제외)으로 통일 필요.
+
+### 🟡 Design / 품질
+
+- **참여도 천장 85** (`35+min(50,…)`, 795) — 타축 100과 비대칭. `engRate*8` 포화 빨라 세션당 태그 1개면 만점 → 변별력 저하
+- **매직넘버 산재** (패널티 8/5/6/10·참여 14/10/6·자주 18/15/12/10·점수 0.6/0.4 등) — 중앙 config 부재로 튜닝·검증 난해
+- **다과목 결측병합 보수적**(840-863): 같은 날 과목 간 condition/understand/assign을 **최악값** 병합 → 다과목 학생 체계적 불리(의도됐으나 영향 큼)
+
+### ✅ 검증 OK (정상)
+
+- 단독응시 백분위 50 중립(966) · myPct/avgPct 0~100 클램프(959) · 최근3 시험 날짜정렬 후 slice(978→812) · rank 동점 공유(963-966)
+
+### 개정 반영 (2026-06-14, v2.8)
+
+신태그 카운터 추가(767-771) 후 공식 배선·결측 폴백 수정. 폐기 키는 옛 데이터 호환 위해 카운터에 잔존(공식 기여는 신규 데이터서 0).
+
+| 축 | 개정 |
+|----|------|
+| ① 학습태도 | condition 0건 → condAvg **65 중립**(종전 0→attitude 20추락 해소). slow·calc_miss·writeup_weak 패널티 미반영 |
+| ② 참여도 | `+deep_try*12` 배선. **희소 positive-only 축 → 결측=중립 50 baseline**(`50+min(50,round(engRate*5))`). 태그 부재가 floor-30 dent 만들던 문제 해소, 50→100 매끄럽게 |
+| ③ 자기주도 | autoBehavior 주력(preview·error_fix)이 v8.30 폐기로 사실상 0 → 만점 과제도 천장 70. **과제 가중 0.7→0.85**(cap 15)로 천장 해소. **과제평균 = 날짜 최악값 병합 → 전 과목-세션 평균**(`__hwAll`): 다과목 학생이 한 교재만 빠뜨려도 0으로 깎이던 문제 해소(예: 4과목 학생 autonomy 3→20). 단, 표시·AI노트용 `assign_grade`·`hwCounts`는 최악값 유지(빠뜨린 교재 적시 목적) |
+| ④ 이해응용 | `+process_good*8` 보너스, `writeup_weak` **약한 감점**(cap 8, process_good의 대칭축), 하한 20 |
+| ⑤ 성취성장 | 죽은 perfect·improved 대신 `effort` 배선, 성적 결측 → **중립 50**(종전 0) |
+| 표시/AI | 수업참여에 심화도전, 이해응용에 풀이과정우수, 주의에 풀이정확성·서술 보완 추가. 빈도차트 deep_try 칩(폐기 칩 제거) |
+
+**"그럴듯" 2차 점검 (펜타곤 균형)**: 1차 수정 후 전형 학생 시뮬레이션에서 ②참여(희소태그 floor-30 dent)·③자주(폐기태그로 천장 70)가 축 불균형 유발 발견 → 위 표대로 재보정. 결과 전형 4종 **편차 11~18 균형 펜타곤**, 큰 편차는 "참여태그 0" 결측 엣지(중립 50으로 정직 표현)뿐.
+
+**실데이터 검증(조이도 22명)**: 실저장 obs/scores로 레이더 생성 중 자기주도 병합 결함 발견 — 4과목 학생(이승진)이 한 교재(라이트쎈) 미완으로 매 세션 최악값 none 병합돼 autonomy 3, 실제론 우공비표준 most·half 수행. 위 ③ 과목평균 보정으로 3→20 교정(22명 중 다과목 학생 전반 상향).
+
+**미반영(후속)**: 가중치 중앙 config화, condition·understand 도 다과목 최악값 병합(단일등급이라 논쟁 여지·별건). **검증**: 전형 5종 시뮬 + 실데이터 22명 레이더(편차·결측 정직성 확인), JS 문법 OK.
+
+`slow`·`calc_miss`·`writeup_weak` 패널티 정책: slow·calc_miss는 v8.30 관찰용(무패널티), writeup_weak만 이해응용 약한 감점(스파이더 차트 균형 — process_good 보너스와 대칭).
 
 ---
 
