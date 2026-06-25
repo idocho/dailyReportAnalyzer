@@ -3,7 +3,7 @@
 **Crafted by IDO(idocho@kakao.com) · Powered by Claude AI**  
 **문서 버전**: 3.0 · **앱 버전**: v0.5 · **최종 수정**: 2026-06-14
 
-> Firebase 스키마: [ClassManager/documents/DB_SCHEMA.md](../../ClassManager/documents/DB_SCHEMA.md) 참조  
+> Firebase 스키마: [DB_SCHEMA.md](../../dailyReportWizard2/documents/DB_SCHEMA.md) 참조 (구 ClassManager에서 dailyReportWizard2로 이관)  
 > 이전 버전 이력: v1.2까지 동일 파일 내 기록
 
 ---
